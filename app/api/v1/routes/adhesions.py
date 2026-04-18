@@ -16,7 +16,12 @@ from app.services.adhesions import AdhesionService, CreateAdhesionInput
 router = APIRouter(prefix="/adhesions")
 
 
-@router.post("", response_model=AdhesionCreatedResponse)
+@router.post(
+    "",
+    response_model=AdhesionCreatedResponse,
+    summary="Créer une nouvelle adhésion",
+    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite l'envoi de fichiers (photo et CV) via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
+)
 async def create_adhesion(
     nom: str = Form(...),
     prenom: str = Form(...),
@@ -77,7 +82,12 @@ async def create_adhesion(
     return {"data": {"id": adhesion.id, "statut": adhesion.statut, "createdAt": adhesion.created_at}}
 
 
-@router.get("", response_model=AdhesionPublicListResponse)
+@router.get(
+    "",
+    response_model=AdhesionPublicListResponse,
+    summary="Suivre ses demandes d'adhésion",
+    description="Permet à un citoyen de lister ses demandes d'adhésion en cours ou passées à partir de son adresse email.",
+)
 async def list_adhesions(email: str, db: AsyncSession = Depends(get_db)):
     email = normalize_email(email)
     if not email:

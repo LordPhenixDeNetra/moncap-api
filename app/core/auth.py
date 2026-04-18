@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.repositories.users import UserRepository
+
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class Principal:
@@ -16,11 +19,14 @@ class Principal:
         self.roles = roles
 
 
-async def get_principal(request: Request, db: AsyncSession = Depends(get_db)) -> Principal:
-    auth = request.headers.get("authorization")
-    if not auth or not auth.lower().startswith("bearer "):
+async def get_principal(
+    auth: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> Principal:
+    if not auth:
         raise HTTPException(status_code=401, detail="Non authentifié")
-    token = auth.split(" ", 1)[1].strip()
+
+    token = auth.credentials
     try:
         payload = decode_access_token(token)
     except Exception:

@@ -31,7 +31,12 @@ def _clear_refresh_cookie(response: Response) -> None:
     response.delete_cookie(key=settings.refresh_cookie_name, path=settings.refresh_cookie_path)
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post(
+    "/login",
+    response_model=LoginResponse,
+    summary="Authentification utilisateur",
+    description="Permet à un utilisateur de se connecter avec son email et son mot de passe. Retourne un Access Token (JWT) et définit un Refresh Token dans un cookie HttpOnly.",
+)
 async def login(payload: LoginRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     service = AuthService(db)
     res = await service.login(
@@ -44,7 +49,12 @@ async def login(payload: LoginRequest, request: Request, response: Response, db:
     return {"data": {"accessToken": res.access_token}}
 
 
-@router.post("/refresh", response_model=LoginResponse)
+@router.post(
+    "/refresh",
+    response_model=LoginResponse,
+    summary="Rafraîchir le jeton d'accès",
+    description="Utilise le Refresh Token stocké dans les cookies pour générer un nouveau Access Token et un nouveau Refresh Token (rotation).",
+)
 async def refresh(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     settings = get_settings()
     token = request.cookies.get(settings.refresh_cookie_name)
@@ -60,7 +70,11 @@ async def refresh(request: Request, response: Response, db: AsyncSession = Depen
     return {"data": {"accessToken": res.access_token}}
 
 
-@router.post("/logout")
+@router.post(
+    "/logout",
+    summary="Déconnexion",
+    description="Révoque le Refresh Token actuel et supprime le cookie de session.",
+)
 async def logout(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     settings = get_settings()
     token = request.cookies.get(settings.refresh_cookie_name)
@@ -70,7 +84,12 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
     return {"data": {"ok": True}}
 
 
-@router.get("/me", response_model=MeResponse)
+@router.get(
+    "/me",
+    response_model=MeResponse,
+    summary="Informations utilisateur actuel",
+    description="Retourne les informations de l'utilisateur actuellement authentifié à partir de son Access Token.",
+)
 async def me(principal: Principal = Depends(get_principal), db: AsyncSession = Depends(get_db)):
     user = await UserRepository(db).get_by_id(principal.user_id)
     if not user:

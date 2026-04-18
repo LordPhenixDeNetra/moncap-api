@@ -18,7 +18,12 @@ from app.schemas.admin import AdminAdhesionListResponse, AdminUpdateAdhesionRequ
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_roles("admin"))])
 
 
-@router.get("/adhesions", response_model=AdminAdhesionListResponse)
+@router.get(
+    "/adhesions",
+    response_model=AdminAdhesionListResponse,
+    summary="Lister les adhésions (Admin)",
+    description="Permet aux administrateurs de lister, filtrer et rechercher parmi toutes les demandes d'adhésion. Supporte la pagination.",
+)
 async def list_adhesions(
     limit: int = 50,
     offset: int = 0,
@@ -58,7 +63,12 @@ async def list_adhesions(
     }
 
 
-@router.patch("/adhesions/{adhesion_id}", response_model=AdminUpdateAdhesionResponse)
+@router.patch(
+    "/adhesions/{adhesion_id}",
+    response_model=AdminUpdateAdhesionResponse,
+    summary="Mettre à jour le statut d'une adhésion",
+    description="Permet de valider ou rejeter une demande d'adhésion. Un motif est obligatoire en cas de rejet.",
+)
 async def update_adhesion(
     adhesion_id: uuid.UUID,
     payload: AdminUpdateAdhesionRequest,
@@ -75,7 +85,11 @@ async def update_adhesion(
     return {"data": {"updated": True}}
 
 
-@router.get("/adhesions/export.csv")
+@router.get(
+    "/adhesions/export.csv",
+    summary="Exporter les adhésions en CSV",
+    description="Génère un fichier CSV contenant les données des adhésions filtrées. Idéal pour les rapports Excel.",
+)
 async def export_csv(
     status: AdhesionStatus | None = None,
     commissariat: str | None = None,
