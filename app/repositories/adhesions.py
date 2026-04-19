@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.adhesion import Adhesion
 from app.models.enums import AdhesionStatus
@@ -14,6 +15,16 @@ class AdhesionRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    def _with_geo(self):
+        return (
+            selectinload(Adhesion.region_domicile),
+            selectinload(Adhesion.departement_domicile),
+            selectinload(Adhesion.commune_domicile),
+            selectinload(Adhesion.region_militantisme),
+            selectinload(Adhesion.departement_militantisme),
+            selectinload(Adhesion.commune_militantisme),
+        )
+
     async def get_by_idempotency_key(self, key: str) -> Adhesion | None:
         res = await self.session.execute(select(Adhesion).where(Adhesion.idempotency_key == key))
         return res.scalar_one_or_none()
@@ -22,6 +33,44 @@ class AdhesionRepository:
         self.session.add(adhesion)
         await self.session.flush()
         return adhesion
+
+    async def get_by_id(self, adhesion_id: uuid.UUID) -> Adhesion | None:
+        qy = select(Adhesion).where(Adhesion.id == adhesion_id).options(*self._with_geo())
+        res = await self.session.execute(qy)
+        return res.scalar_one_or_none()
+
+    async def get_latest_by_email(self, email: str) -> Adhesion | None:
+        qy = (
+            select(Adhesion)
+            .where(Adhesion.email == email)
+            .order_by(desc(Adhesion.created_at))
+            .limit(1)
+            .options(*self._with_geo())
+        )
+        res = await self.session.execute(qy)
+        return res.scalar_one_or_none()
+
+    async def get_latest_by_cni(self, cni: str) -> Adhesion | None:
+        qy = (
+            select(Adhesion)
+            .where(Adhesion.cni == cni)
+            .order_by(desc(Adhesion.created_at))
+            .limit(1)
+            .options(*self._with_geo())
+        )
+        res = await self.session.execute(qy)
+        return res.scalar_one_or_none()
+
+    async def get_latest_by_tel_mobile(self, tel_mobile: str) -> Adhesion | None:
+        qy = (
+            select(Adhesion)
+            .where(Adhesion.tel_mobile == tel_mobile)
+            .order_by(desc(Adhesion.created_at))
+            .limit(1)
+            .options(*self._with_geo())
+        )
+        res = await self.session.execute(qy)
+        return res.scalar_one_or_none()
 
     async def list_by_email(self, email: str) -> list[Adhesion]:
         res = await self.session.execute(

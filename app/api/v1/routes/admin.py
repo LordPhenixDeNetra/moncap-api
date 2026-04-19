@@ -14,6 +14,8 @@ from app.db.session import get_db
 from app.models.enums import AdhesionStatus
 from app.repositories.adhesions import AdhesionRepository
 from app.schemas.admin import AdminAdhesionListResponse, AdminUpdateAdhesionRequest, AdminUpdateAdhesionResponse
+from app.schemas.adhesions import AdhesionDetailResponse
+from app.services.adhesions import AdhesionService
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_roles("admin"))])
 
@@ -83,6 +85,24 @@ async def update_adhesion(
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
     await db.commit()
     return {"data": {"updated": True}}
+
+@router.get(
+    "/adhesions/lookup",
+    response_model=AdhesionDetailResponse,
+    summary="Récupérer une adhésion (lookup)",
+    description="Retourne la fiche complète d'une adhésion en recherchant par id, email, cni ou tel_mobile. Un seul critère doit être fourni.",
+)
+async def lookup_adhesion(
+    id: uuid.UUID | None = None,
+    email: str | None = None,
+    cni: str | None = None,
+    tel_mobile: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    adhesion = await AdhesionService(db).lookup_details(
+        adhesion_id=id, email=email, cni=cni, tel_mobile=tel_mobile
+    )
+    return {"data": adhesion}
 
 
 @router.get(

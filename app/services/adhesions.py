@@ -52,6 +52,40 @@ class AdhesionService:
         self.geo = GeoRepository(session)
         self.storage = LocalStorage()
 
+    async def lookup_details(
+        self,
+        *,
+        adhesion_id: uuid.UUID | None,
+        email: str | None,
+        cni: str | None,
+        tel_mobile: str | None,
+    ) -> Adhesion:
+        criteria = [
+            ("id", adhesion_id),
+            ("email", email),
+            ("cni", cni),
+            ("tel_mobile", tel_mobile),
+        ]
+        provided = [(k, v) for (k, v) in criteria if v is not None and str(v).strip() != ""]
+        if not provided:
+            raise HTTPException(status_code=400, detail="Un critère de recherche est requis (id, email, cni, tel_mobile)")
+        if len(provided) > 1:
+            raise HTTPException(status_code=400, detail="Un seul critère de recherche doit être fourni")
+
+        key, value = provided[0]
+        if key == "id":
+            adhesion = await self.adhesions.get_by_id(value)
+        elif key == "email":
+            adhesion = await self.adhesions.get_latest_by_email(normalize_email(str(value)))
+        elif key == "cni":
+            adhesion = await self.adhesions.get_latest_by_cni(str(value).strip())
+        else:
+            adhesion = await self.adhesions.get_latest_by_tel_mobile(str(value).strip())
+
+        if not adhesion:
+            raise HTTPException(status_code=404, detail="Adhésion introuvable")
+        return adhesion
+
     async def _validate_region_departement(self, *, region_id: uuid.UUID, departement_id: uuid.UUID) -> None:
         departement = await self.geo.get_departement(departement_id)
         if not departement or departement.region_id != region_id:
