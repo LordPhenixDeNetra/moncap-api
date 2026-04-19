@@ -83,3 +83,7 @@ python -m poetry run pytest
 - `app/services/` : logique métier
 - `app/repositories/` : accès DB
 - `alembic/` : migrations
+
+
+
+<!-- python -m poetry run uvicorn main:app --reload --host 127.0.0.1 --port 8000 -->
