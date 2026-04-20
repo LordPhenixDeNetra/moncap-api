@@ -68,7 +68,8 @@ class AdhesionDetailOut(BaseModel):
     paiement_confirme: bool
     reference_paiement: str | None
     cv_url: str | None
-    photo_url: str | None
+    photo_recto_url: str | None
+    photo_verso_url: str | None
     statut: AdhesionStatus
     motif_rejet: str | None = Field(default=None, alias="motifRejet")
     certification: bool

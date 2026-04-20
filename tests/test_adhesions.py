@@ -21,7 +21,16 @@ async def _seed_geo(db_session):
 
 def _files():
     return [
+        ("photo_recto", ("photo-recto.jpg", b"fake-photo-recto", "image/jpeg")),
+        ("photo_verso", ("photo-verso.jpg", b"fake-photo-verso", "image/jpeg")),
+        ("cv", ("cv.pdf", b"fake-cv", "application/pdf")),
+    ]
+
+
+def _files_legacy_recto():
+    return [
         ("photo", ("photo.jpg", b"fake-photo", "image/jpeg")),
+        ("photo_verso", ("photo-verso.jpg", b"fake-photo-verso", "image/jpeg")),
         ("cv", ("cv.pdf", b"fake-cv", "application/pdf")),
     ]
 
@@ -72,6 +81,17 @@ async def test_post_adhesion_idempotency(client, db_session):
     assert r3.status_code == 409
 
 
+async def test_post_adhesion_legacy_photo_alias(client, db_session):
+    r1, _, d1, c1 = await _seed_geo(db_session)
+
+    r = await client.post(
+        "/api/v1/adhesions",
+        data=_payload(region_id=r1.id, departement_id=d1.id, commune_id=c1.id),
+        files=_files_legacy_recto(),
+    )
+    assert r.status_code == 200
+
+
 async def test_post_adhesion_geo_coherence(client, db_session):
     r1, r2, d1, c1 = await _seed_geo(db_session)
 
@@ -81,4 +101,3 @@ async def test_post_adhesion_geo_coherence(client, db_session):
         files=_files(),
     )
     assert r.status_code == 400
-

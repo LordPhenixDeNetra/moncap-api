@@ -20,7 +20,7 @@ router = APIRouter(prefix="/adhesions")
     "",
     response_model=AdhesionCreatedResponse,
     summary="Créer une nouvelle adhésion",
-    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite l'envoi de fichiers (photo et CV) via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
+    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite l'envoi de fichiers (photo_recto, photo_verso et CV) via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
 )
 async def create_adhesion(
     nom: str = Form(...),
@@ -47,11 +47,17 @@ async def create_adhesion(
     montant_adhesion: int = Form(25000),
     reference_paiement: str | None = Form(None),
     certification: bool = Form(...),
-    photo: UploadFile = File(...),
+    photo_recto: UploadFile | None = File(None),
+    photo_verso: UploadFile = File(...),
+    photo: UploadFile | None = File(None),
     cv: UploadFile = File(...),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
 ):
+    photo_recto_final = photo_recto or photo
+    if not photo_recto_final:
+        raise HTTPException(status_code=422, detail="photo_recto (ou photo) est requis")
+
     data = CreateAdhesionInput(
         nom=nom,
         prenom=prenom,
@@ -78,7 +84,13 @@ async def create_adhesion(
         certification=certification,
         reference_paiement=reference_paiement,
     )
-    adhesion = await AdhesionService(db).create(data=data, photo=photo, cv=cv, idempotency_key=idempotency_key)
+    adhesion = await AdhesionService(db).create(
+        data=data,
+        photo_recto=photo_recto_final,
+        photo_verso=photo_verso,
+        cv=cv,
+        idempotency_key=idempotency_key,
+    )
     return {"data": {"id": adhesion.id, "statut": adhesion.statut, "createdAt": adhesion.created_at}}
 
 
@@ -98,4 +110,3 @@ async def list_adhesions(email: str, db: AsyncSession = Depends(get_db)):
             {"id": x.id, "statut": x.statut, "createdAt": x.created_at, "motifRejet": x.motif_rejet} for x in items
         ]
     }
-
