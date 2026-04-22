@@ -5,17 +5,25 @@ import io
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import require_roles
+from app.core.settings import get_settings
 from app.db.session import get_db
 from app.models.enums import AdhesionStatus
 from app.repositories.adhesions import AdhesionRepository
-from app.schemas.admin import AdminAdhesionListResponse, AdminUpdateAdhesionRequest, AdminUpdateAdhesionResponse
+from app.schemas.admin import (
+    AdminAdhesionListResponse,
+    AdminConfirmPaymentRequest,
+    AdminUpdateAdhesionRequest,
+    AdminUpdateAdhesionResponse,
+)
 from app.schemas.adhesions import AdhesionDetailResponse
+from app.services.adhesion_mail_templates import build_adhesion_status_changed, build_payment_confirmed
 from app.services.adhesions import AdhesionService
+from app.services.mail import send_email_best_effort
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_roles("admin"))])
 
@@ -74,16 +82,34 @@ async def list_adhesions(
 async def update_adhesion(
     adhesion_id: uuid.UUID,
     payload: AdminUpdateAdhesionRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     if payload.statut == AdhesionStatus.rejetee and not (payload.motif_rejet and payload.motif_rejet.strip()):
         raise HTTPException(status_code=400, detail="Motif requis si rejet")
+    before = await AdhesionRepository(db).get_by_id(adhesion_id)
+    if not before:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
     rowcount = await AdhesionRepository(db).update_status(
         adhesion_id=adhesion_id, statut=payload.statut, motif_rejet=payload.motif_rejet
     )
     if rowcount == 0:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
     await db.commit()
+    after = await AdhesionRepository(db).get_by_id(adhesion_id)
+    settings = get_settings()
+    if settings.mail_enabled and after and after.email:
+        subject, text, html = build_adhesion_status_changed(
+            adhesion=after, old_status=before.statut, base_url=settings.public_base_url
+        )
+        background_tasks.add_task(
+            send_email_best_effort,
+            to=after.email,
+            subject=subject,
+            text=text,
+            html=html,
+            settings=settings,
+        )
     return {"data": {"updated": True}}
 
 @router.get(
@@ -103,6 +129,41 @@ async def lookup_adhesion(
         adhesion_id=id, email=email, cni=cni, tel_mobile=tel_mobile
     )
     return {"data": adhesion}
+
+
+@router.patch(
+    "/adhesions/{adhesion_id}/payment",
+    response_model=AdminUpdateAdhesionResponse,
+    summary="Confirmer le paiement d'une adhésion",
+    description="Permet de marquer le paiement comme confirmé et d'enregistrer une référence. Envoie un email à l’adhérant si paiement confirmé.",
+)
+async def confirm_payment(
+    adhesion_id: uuid.UUID,
+    payload: AdminConfirmPaymentRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    rowcount = await AdhesionRepository(db).update_payment(
+        adhesion_id=adhesion_id,
+        paiement_confirme=payload.paiement_confirme,
+        reference_paiement=payload.reference_paiement,
+    )
+    if rowcount == 0:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
+    await db.commit()
+    adhesion = await AdhesionRepository(db).get_by_id(adhesion_id)
+    settings = get_settings()
+    if settings.mail_enabled and payload.paiement_confirme and adhesion and adhesion.email:
+        subject, text, html = build_payment_confirmed(adhesion=adhesion, base_url=settings.public_base_url)
+        background_tasks.add_task(
+            send_email_best_effort,
+            to=adhesion.email,
+            subject=subject,
+            text=text,
+            html=html,
+            settings=settings,
+        )
+    return {"data": {"updated": True}}
 
 
 @router.get(

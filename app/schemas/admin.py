@@ -35,5 +35,10 @@ class AdminUpdateAdhesionRequest(BaseModel):
     motif_rejet: str | None = Field(default=None, alias="motifRejet")
 
 
+class AdminConfirmPaymentRequest(BaseModel):
+    paiement_confirme: bool = Field(default=True, alias="paiementConfirme")
+    reference_paiement: str | None = Field(default=None, alias="referencePaiement")
+
+
 class AdminUpdateAdhesionResponse(BaseModel):
     data: dict

@@ -86,4 +86,17 @@ python -m poetry run pytest
 
 
 
+
+<!-- .\.venv\Scripts\activate -->
+<!-- .\.venv\Scripts\Activate.ps1 -->
+
+
+<!-- LINUX -->
+<!-- source .venv/bin/activate -->
+<!-- source venv/bin/activate -->
+
+<!-- python -m pip install -U poetry
+poetry --version
+poetry install -->
+
 <!-- python -m poetry run uvicorn main:app --reload --host 127.0.0.1 --port 8000 -->

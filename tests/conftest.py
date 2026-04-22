@@ -13,6 +13,7 @@ async def app(tmp_path) -> AsyncGenerator:
     os.environ["JWT_SECRET"] = "x" * 40
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
     os.environ["REFRESH_COOKIE_SECURE"] = "false"
+    os.environ["MAIL_ENABLED"] = "false"
 
     from app.core.settings import get_settings
     from app.db.session import get_engine

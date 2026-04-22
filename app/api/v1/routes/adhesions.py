@@ -3,15 +3,18 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import normalize_email
+from app.core.settings import get_settings
 from app.db.session import get_db
 from app.models.enums import EngagementType, PaymentMode
 from app.repositories.adhesions import AdhesionRepository
 from app.schemas.adhesions import AdhesionCreatedResponse, AdhesionPublicListResponse
 from app.services.adhesions import AdhesionService, CreateAdhesionInput
+from app.services.adhesion_mail_templates import build_adhesion_created
+from app.services.mail import send_email_best_effort
 
 router = APIRouter(prefix="/adhesions")
 
@@ -23,6 +26,7 @@ router = APIRouter(prefix="/adhesions")
     description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite l'envoi de fichiers (photo_recto, photo_verso et CV) via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
 )
 async def create_adhesion(
+    background_tasks: BackgroundTasks,
     nom: str = Form(...),
     prenom: str = Form(...),
     date_naissance: date = Form(...),
@@ -91,6 +95,17 @@ async def create_adhesion(
         cv=cv,
         idempotency_key=idempotency_key,
     )
+    settings = get_settings()
+    if settings.mail_enabled and adhesion.email:
+        subject, text, html = build_adhesion_created(adhesion=adhesion, base_url=settings.public_base_url)
+        background_tasks.add_task(
+            send_email_best_effort,
+            to=adhesion.email,
+            subject=subject,
+            text=text,
+            html=html,
+            settings=settings,
+        )
     return {"data": {"id": adhesion.id, "statut": adhesion.statut, "createdAt": adhesion.created_at}}
 
 

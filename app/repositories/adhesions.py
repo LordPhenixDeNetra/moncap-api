@@ -228,3 +228,21 @@ class AdhesionRepository:
             .values(statut=statut, motif_rejet=motif_rejet, updated_at=func.now())
         )
         return res.rowcount or 0
+
+    async def update_payment(
+        self,
+        *,
+        adhesion_id: uuid.UUID,
+        paiement_confirme: bool,
+        reference_paiement: str | None,
+    ) -> int:
+        res = await self.session.execute(
+            update(Adhesion)
+            .where(Adhesion.id == adhesion_id)
+            .values(
+                paiement_confirme=paiement_confirme,
+                reference_paiement=reference_paiement,
+                updated_at=func.now(),
+            )
+        )
+        return res.rowcount or 0

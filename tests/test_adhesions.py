@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import date
 
 from sqlalchemy import func, select
 
+from app.core.settings import get_settings
 from app.models.adhesion import Adhesion
 from app.models.geo import Commune, Departement, Region
 
@@ -101,3 +103,26 @@ async def test_post_adhesion_geo_coherence(client, db_session):
         files=_files(),
     )
     assert r.status_code == 400
+
+
+async def test_post_adhesion_triggers_email_when_enabled(client, db_session, monkeypatch):
+    r1, _, d1, c1 = await _seed_geo(db_session)
+
+    os.environ["MAIL_ENABLED"] = "true"
+    get_settings.cache_clear()
+
+    calls: list[dict] = []
+
+    def fake_send_email_best_effort(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("app.api.v1.routes.adhesions.send_email_best_effort", fake_send_email_best_effort)
+
+    r = await client.post(
+        "/api/v1/adhesions",
+        data=_payload(region_id=r1.id, departement_id=d1.id, commune_id=c1.id),
+        files=_files(),
+    )
+    assert r.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["to"] == "john@example.com"

@@ -31,6 +31,17 @@ class Settings(BaseSettings):
 
     storage_dir: str = "storage"
     public_files_path: str = "/files"
+    public_base_url: str | None = None
+
+    mail_enabled: bool = False
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    mail_from: str | None = None
+    mail_from_name: str = "MONCAP"
 
     @field_validator("database_url")
     @classmethod
