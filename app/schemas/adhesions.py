@@ -75,7 +75,7 @@ class AdhesionDetailOut(BaseModel):
     pays_militantisme: PaysOut | None = None
 
     fonction_professionnelle: str
-    engagement: EngagementType
+    engagement: list[EngagementType]
     commissariat: str
     mode_paiement: PaymentMode
     montant_adhesion: int

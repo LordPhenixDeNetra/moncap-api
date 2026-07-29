@@ -4,6 +4,7 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
+from typing import Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import normalize_email
@@ -53,7 +54,7 @@ async def create_adhesion(
     pays_militantisme_id: uuid.UUID | None = Form(None),
     ville_militantisme: str | None = Form(None),
     fonction_professionnelle: str = Form(...),
-    engagement: EngagementType = Form(...),
+    engagement: List[EngagementType] = Form(...),
     commissariat: str = Form(...),
     mode_paiement: PaymentMode = Form(...),
     montant_adhesion: int = Form(25000),

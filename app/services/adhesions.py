@@ -45,7 +45,7 @@ class CreateAdhesionInput:
     pays_militantisme_id: uuid.UUID | None
     ville_militantisme: str | None
     fonction_professionnelle: str
-    engagement: EngagementType
+    engagement: list[EngagementType]
     commissariat: str
     mode_paiement: PaymentMode
     montant_adhesion: int
@@ -125,6 +125,8 @@ class AdhesionService:
             raise HTTPException(status_code=400, detail="Certification requise")
         if data.montant_adhesion < 0:
             raise HTTPException(status_code=400, detail="Montant invalide")
+        if not data.engagement:
+            raise HTTPException(status_code=400, detail="Au moins un type d'engagement est requis")
 
         if data.est_diaspora:
             if not data.pays_domicile_id:
@@ -184,7 +186,7 @@ class AdhesionService:
             pays_militantisme_id=data.pays_militantisme_id,
             ville_militantisme=data.ville_militantisme,
             fonction_professionnelle=data.fonction_professionnelle,
-            engagement=data.engagement,
+            engagement=[e.value for e in data.engagement],
             commissariat=data.commissariat,
             mode_paiement=data.mode_paiement,
             montant_adhesion=data.montant_adhesion,

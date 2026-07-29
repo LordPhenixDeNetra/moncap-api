@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,9 +61,7 @@ class Adhesion(Base):
     pays_militantisme = relationship("Pays", foreign_keys=[pays_militantisme_id])
 
     fonction_professionnelle: Mapped[str] = mapped_column(String(200))
-    engagement: Mapped[EngagementType] = mapped_column(
-        SAEnum(EngagementType, name="engagement_type", native_enum=False, validate_strings=True),
-    )
+    engagement: Mapped[list] = mapped_column(JSON, default=list)
     commissariat: Mapped[str] = mapped_column(String(200), index=True)
     mode_paiement: Mapped[PaymentMode] = mapped_column(
         SAEnum(PaymentMode, name="payment_mode", native_enum=False, validate_strings=True),
