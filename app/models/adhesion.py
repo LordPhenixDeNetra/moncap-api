@@ -29,13 +29,21 @@ class Adhesion(Base):
     carte_electeur: Mapped[str | None] = mapped_column(String(100), nullable=True)
     carte_pastef: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
-    region_domicile_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("regions.id"), index=True)
-    departement_domicile_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("departements.id"), index=True)
-    commune_domicile_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("communes.id"), index=True)
+    est_diaspora: Mapped[bool] = mapped_column(Boolean, server_default="0", index=True)
 
-    region_militantisme_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("regions.id"), index=True)
-    departement_militantisme_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("departements.id"), index=True)
+    region_domicile_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("regions.id"), nullable=True, index=True)
+    departement_domicile_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("departements.id"), nullable=True, index=True)
+    commune_domicile_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("communes.id"), nullable=True, index=True)
+
+    region_militantisme_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("regions.id"), nullable=True, index=True)
+    departement_militantisme_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("departements.id"), nullable=True, index=True)
     commune_militantisme_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("communes.id"), nullable=True)
+
+    pays_domicile_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("pays.id"), nullable=True, index=True)
+    ville_domicile: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    pays_militantisme_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("pays.id"), nullable=True, index=True)
+    ville_militantisme: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     region_domicile = relationship("Region", foreign_keys=[region_domicile_id])
     departement_domicile = relationship("Departement", foreign_keys=[departement_domicile_id])
@@ -44,6 +52,9 @@ class Adhesion(Base):
     region_militantisme = relationship("Region", foreign_keys=[region_militantisme_id])
     departement_militantisme = relationship("Departement", foreign_keys=[departement_militantisme_id])
     commune_militantisme = relationship("Commune", foreign_keys=[commune_militantisme_id])
+
+    pays_domicile = relationship("Pays", foreign_keys=[pays_domicile_id])
+    pays_militantisme = relationship("Pays", foreign_keys=[pays_militantisme_id])
 
     fonction_professionnelle: Mapped[str] = mapped_column(String(200))
     engagement: Mapped[EngagementType] = mapped_column(

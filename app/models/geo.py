@@ -10,6 +10,16 @@ from app.db.base import Base
 from app.db.types import GUID
 
 
+class Pays(Base):
+    __tablename__ = "pays"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(3), unique=True, index=True)
+    nom: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    continent: Mapped[str] = mapped_column(String(100), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Region(Base):
     __tablename__ = "regions"
 
@@ -46,4 +56,3 @@ class Commune(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     departement: Mapped["Departement"] = relationship(back_populates="communes")
-

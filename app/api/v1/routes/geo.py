@@ -7,9 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.repositories.geo import GeoRepository
-from app.schemas.geo import CommunesResponse, DepartementsResponse, RegionsResponse
+from app.schemas.geo import CommunesResponse, DepartementsResponse, PaysResponse, RegionsResponse
 
 router = APIRouter(prefix="/geo")
+
+
+@router.get(
+    "/pays",
+    response_model=PaysResponse,
+    summary="Lister tous les pays",
+    description="Retourne la liste des pays. Filtrable par continent.",
+)
+async def list_pays(continent: str | None = None, db: AsyncSession = Depends(get_db)):
+    items = await GeoRepository(db).list_pays(continent=continent)
+    return {"data": items}
 
 
 @router.get(

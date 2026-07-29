@@ -5,12 +5,19 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.geo import Commune, Departement, Region
+from app.models.geo import Commune, Departement, Pays, Region
 
 
 class GeoRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def list_pays(self, *, continent: str | None = None) -> list[Pays]:
+        q = select(Pays).order_by(Pays.nom.asc())
+        if continent:
+            q = q.where(Pays.continent == continent)
+        res = await self.session.execute(q)
+        return list(res.scalars().all())
 
     async def list_regions(self) -> list[Region]:
         res = await self.session.execute(select(Region).order_by(Region.nom.asc()))

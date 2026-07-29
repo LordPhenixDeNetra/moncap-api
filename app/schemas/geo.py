@@ -25,6 +25,18 @@ class CommuneOut(BaseModel):
     nom: str
 
 
+class PaysOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    code: str
+    nom: str
+    continent: str
+
+
+class PaysResponse(BaseModel):
+    data: list[PaysOut]
+
+
 class RegionsResponse(BaseModel):
     data: list[RegionOut]
 
