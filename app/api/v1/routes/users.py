@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import require_roles
-from app.core.security import hash_password, normalize_email
 from app.db.session import get_db
 from app.models.enums import AppRole
-from app.repositories.users import UserRepository
 from app.schemas.users import (
     UserCreateRequest,
     UserCreateResponse,
@@ -19,6 +17,7 @@ from app.schemas.users import (
     UserUpdateRequest,
     UserUpdateResponse,
 )
+from app.services.users import CreateUserInput, UpdateUserInput, UserService
 
 
 router = APIRouter(
@@ -47,7 +46,7 @@ def _build_user_schema(user) -> UserSchema:
 async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
-    users = await UserRepository(db).list_all()
+    users = await UserService(db).list_users()
     return {"data": [_build_user_schema(u) for u in users]}
 
 
@@ -62,21 +61,13 @@ async def create_user(
     payload: UserCreateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    repo = UserRepository(db)
-    email = normalize_email(payload.email)
-
-    existing = await repo.get_by_email(email)
-    if existing:
-        raise HTTPException(status_code=409, detail="Un utilisateur avec cet e-mail existe déjà")
-
-    password_hash = hash_password(payload.password)
-    user = await repo.create_user(email=email, password_hash=password_hash)
-
-    for role in payload.roles:
-        await repo.add_role(user_id=user.id, role=role)
-
-    await db.commit()
-    user = await repo.get_by_id(user.id)
+    user = await UserService(db).create_user(
+        CreateUserInput(
+            email=payload.email,
+            password=payload.password,
+            roles=payload.roles,
+        )
+    )
     return {"data": _build_user_schema(user)}
 
 
@@ -90,9 +81,7 @@ async def get_user(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    user = await UserRepository(db).get_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user = await UserService(db).get_user(user_id)
     return {"data": _build_user_schema(user)}
 
 
@@ -107,27 +96,14 @@ async def update_user(
     payload: UserUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    repo = UserRepository(db)
-    user = await repo.get_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
-
-    if payload.email is not None:
-        email = normalize_email(payload.email)
-        existing = await repo.get_by_email(email)
-        if existing and existing.id != user_id:
-            raise HTTPException(status_code=409, detail="Un utilisateur avec cet e-mail existe déjà")
-        await repo.update_email(user_id=user_id, email=email)
-
-    if payload.password is not None:
-        password_hash = hash_password(payload.password)
-        await repo.update_password(user_id=user_id, password_hash=password_hash)
-
-    if payload.roles is not None:
-        await repo.replace_roles(user_id=user_id, roles=payload.roles)
-
-    await db.commit()
-    user = await repo.get_by_id(user_id)
+    user = await UserService(db).update_user(
+        user_id,
+        UpdateUserInput(
+            email=payload.email,
+            password=payload.password,
+            roles=payload.roles,
+        ),
+    )
     return {"data": _build_user_schema(user)}
 
 
@@ -141,8 +117,5 @@ async def delete_user(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    rowcount = await UserRepository(db).delete_user(user_id=user_id)
-    if rowcount == 0:
-        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
-    await db.commit()
+    await UserService(db).delete_user(user_id)
     return {"data": {"deleted": True}}
