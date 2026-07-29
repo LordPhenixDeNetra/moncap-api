@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.models.enums import AppRole
+
 
 class User(BaseModel):
     id: uuid.UUID
@@ -20,3 +22,13 @@ class User(BaseModel):
 
 class UserListResponse(BaseModel):
     data: list[User]
+
+
+class UserCreateRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=200)
+    roles: list[AppRole]
+
+
+class UserCreateResponse(BaseModel):
+    data: User
