@@ -8,20 +8,21 @@ from pydantic import BaseModel, EmailStr, Field
 from app.models.enums import AppRole
 
 
-class User(BaseModel):
+class UserSchema(BaseModel):
     id: uuid.UUID
     email: EmailStr
     roles: list[str]
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
-    last_login_at: datetime | None = Field(alias="lastLoginAt")
+    last_login_at: datetime | None = Field(default=None, alias="lastLoginAt")
 
     class Config:
         from_attributes = True
+        populate_by_name = True
 
 
 class UserListResponse(BaseModel):
-    data: list[User]
+    data: list[UserSchema]
 
 
 class UserCreateRequest(BaseModel):
@@ -31,4 +32,18 @@ class UserCreateRequest(BaseModel):
 
 
 class UserCreateResponse(BaseModel):
-    data: User
+    data: UserSchema
+
+
+class UserUpdateRequest(BaseModel):
+    email: EmailStr | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=200)
+    roles: list[AppRole] | None = None
+
+
+class UserUpdateResponse(BaseModel):
+    data: UserSchema
+
+
+class UserDeleteResponse(BaseModel):
+    data: dict

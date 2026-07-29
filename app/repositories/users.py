@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,9 @@ class UserRepository:
         return res.scalar_one_or_none()
 
     async def get_by_id(self, user_id: uuid.UUID) -> User | None:
-        res = await self.session.execute(select(User).where(User.id == user_id))
+        res = await self.session.execute(
+            select(User).where(User.id == user_id).options(selectinload(User.roles))
+        )
         return res.scalar_one_or_none()
 
     async def list_roles(self, user_id: uuid.UUID) -> list[str]:
@@ -36,9 +38,30 @@ class UserRepository:
         self.session.add(UserRole(user_id=user_id, role=role))
         await self.session.flush()
 
+    async def replace_roles(self, *, user_id: uuid.UUID, roles: list[AppRole]) -> None:
+        await self.session.execute(delete(UserRole).where(UserRole.user_id == user_id))
+        for role in roles:
+            self.session.add(UserRole(user_id=user_id, role=role))
+        await self.session.flush()
+
+    async def update_email(self, *, user_id: uuid.UUID, email: str) -> None:
+        user = await self.get_by_id(user_id)
+        if user:
+            user.email = email
+            await self.session.flush()
+
+    async def update_password(self, *, user_id: uuid.UUID, password_hash: str) -> None:
+        user = await self.get_by_id(user_id)
+        if user:
+            user.password_hash = password_hash
+            await self.session.flush()
+
+    async def delete_user(self, *, user_id: uuid.UUID) -> int:
+        res = await self.session.execute(delete(User).where(User.id == user_id))
+        return res.rowcount or 0
+
     async def list_all(self) -> list[User]:
         res = await self.session.execute(
             select(User).options(selectinload(User.roles)).order_by(User.created_at)
         )
         return list(res.scalars().unique().all())
-
