@@ -122,6 +122,48 @@ class AdhesionRepository:
         items = list((await self.session.execute(qy)).scalars().all())
         return items, int(total)
 
+    async def list_admin_multi_status(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        statuts: list[AdhesionStatus],
+        commissariat: str | None,
+        q: str | None,
+        from_date: date | None,
+        to_date: date | None,
+    ) -> tuple[list[Adhesion], int]:
+        where = []
+        if statuts:
+            where.append(Adhesion.statut.in_(statuts))
+        if commissariat:
+            where.append(Adhesion.commissariat == commissariat)
+        if from_date:
+            where.append(Adhesion.created_at >= datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc))
+        if to_date:
+            where.append(Adhesion.created_at <= datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc))
+        if q:
+            like = f"%{q.strip()}%"
+            where.append(
+                or_(
+                    Adhesion.nom.ilike(like),
+                    Adhesion.prenom.ilike(like),
+                    Adhesion.email.ilike(like),
+                    Adhesion.cni.ilike(like),
+                )
+            )
+
+        base = select(Adhesion)
+        if where:
+            base = base.where(and_(*where))
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total = (await self.session.execute(count_q)).scalar_one()
+
+        qy = base.order_by(desc(Adhesion.created_at)).limit(limit).offset(offset)
+        items = list((await self.session.execute(qy)).scalars().all())
+        return items, int(total)
+
     def _apply_admin_filters(
         self,
         qy: Select,

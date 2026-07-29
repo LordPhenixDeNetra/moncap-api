@@ -25,10 +25,22 @@ from app.services.adhesion_mail_templates import build_adhesion_status_changed, 
 from app.services.adhesions import AdhesionService
 from app.services.mail import send_email_best_effort
 
-router = APIRouter(prefix="/admin", dependencies=[Depends(require_roles("admin"))])
+_ALL_STAFF_ROLES = ("admin", "comite_accueil", "comite_directoire")
+
+router = APIRouter(prefix="/admin")
+
+read_router = APIRouter(
+    prefix="/admin",
+    dependencies=[Depends(require_roles(*_ALL_STAFF_ROLES))],
+)
+
+write_router = APIRouter(
+    prefix="/admin",
+    dependencies=[Depends(require_roles("admin"))],
+)
 
 
-@router.get(
+@read_router.get(
     "/adhesions",
     response_model=AdminAdhesionListResponse,
     summary="Lister les adhésions (Admin)",
@@ -73,7 +85,7 @@ async def list_adhesions(
     }
 
 
-@router.patch(
+@write_router.patch(
     "/adhesions/{adhesion_id}",
     response_model=AdminUpdateAdhesionResponse,
     summary="Mettre à jour le statut d'une adhésion",
@@ -115,7 +127,7 @@ async def update_adhesion(
         )
     return {"data": {"updated": True}}
 
-@router.get(
+@read_router.get(
     "/adhesions/lookup",
     response_model=AdhesionDetailResponse,
     summary="Récupérer une adhésion (lookup)",
@@ -134,7 +146,7 @@ async def lookup_adhesion(
     return {"data": adhesion}
 
 
-@router.patch(
+@write_router.patch(
     "/adhesions/{adhesion_id}/payment",
     response_model=AdminUpdateAdhesionResponse,
     summary="Confirmer le paiement d'une adhésion",
@@ -169,7 +181,7 @@ async def confirm_payment(
     return {"data": {"updated": True}}
 
 
-@router.get(
+@read_router.get(
     "/adhesions/export.csv",
     summary="Exporter les adhésions en CSV",
     description="Génère un fichier CSV contenant les données des adhésions filtrées. Idéal pour les rapports Excel.",
@@ -252,7 +264,7 @@ async def export_csv(
     return StreamingResponse(_iter(), media_type="text/csv; charset=utf-8", headers=headers)
 
 
-@router.get(
+@read_router.get(
     "/adhesions/export.xlsx",
     summary="Exporter les adhésions en Excel",
     description="Génère un fichier Excel (.xlsx) contenant les données des adhésions filtrées, avec un encodage correct pour les caractères spéciaux.",
