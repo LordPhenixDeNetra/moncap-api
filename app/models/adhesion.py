@@ -29,6 +29,10 @@ class Adhesion(Base):
     carte_electeur: Mapped[str | None] = mapped_column(String(100), nullable=True)
     carte_pastef: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    niveau_etude: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    annees_experience: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    biographie: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
     est_diaspora: Mapped[bool] = mapped_column(Boolean, server_default="0", index=True)
 
     region_domicile_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("regions.id"), nullable=True, index=True)

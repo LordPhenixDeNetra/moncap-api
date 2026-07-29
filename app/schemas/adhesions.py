@@ -46,6 +46,10 @@ class AdhesionDetailOut(BaseModel):
     carte_electeur: str | None
     carte_pastef: str | None
 
+    niveau_etude: str | None = None
+    annees_experience: int | None = None
+    biographie: str | None = None
+
     est_diaspora: bool = False
 
     region_domicile_id: uuid.UUID | None = None

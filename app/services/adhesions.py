@@ -31,6 +31,9 @@ class CreateAdhesionInput:
     carte_electeur: str | None
     carte_pastef: str | None
     est_diaspora: bool
+    niveau_etude: str | None
+    annees_experience: int | None
+    biographie: str | None
     region_domicile_id: uuid.UUID | None
     departement_domicile_id: uuid.UUID | None
     commune_domicile_id: uuid.UUID | None
@@ -167,6 +170,9 @@ class AdhesionService:
             carte_electeur=data.carte_electeur,
             carte_pastef=data.carte_pastef,
             est_diaspora=data.est_diaspora,
+            niveau_etude=data.niveau_etude,
+            annees_experience=data.annees_experience,
+            biographie=data.biographie,
             region_domicile_id=data.region_domicile_id,
             departement_domicile_id=data.departement_domicile_id,
             commune_domicile_id=data.commune_domicile_id,
