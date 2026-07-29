@@ -25,6 +25,8 @@ class AdhesionRepository:
             selectinload(Adhesion.region_militantisme),
             selectinload(Adhesion.departement_militantisme),
             selectinload(Adhesion.commune_militantisme),
+            selectinload(Adhesion.pays_domicile),
+            selectinload(Adhesion.pays_militantisme),
         )
 
     async def get_by_idempotency_key(self, key: str) -> Adhesion | None:

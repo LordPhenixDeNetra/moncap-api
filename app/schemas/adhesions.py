@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import AdhesionStatus, EngagementType, PaymentMode
-from app.schemas.geo import CommuneOut, DepartementOut, RegionOut
+from app.schemas.geo import CommuneOut, DepartementOut, PaysOut, RegionOut
 
 
 class AdhesionCreatedData(BaseModel):
@@ -46,12 +46,14 @@ class AdhesionDetailOut(BaseModel):
     carte_electeur: str | None
     carte_pastef: str | None
 
-    region_domicile_id: uuid.UUID
-    departement_domicile_id: uuid.UUID
-    commune_domicile_id: uuid.UUID
-    region_militantisme_id: uuid.UUID
-    departement_militantisme_id: uuid.UUID
-    commune_militantisme_id: uuid.UUID | None
+    est_diaspora: bool = False
+
+    region_domicile_id: uuid.UUID | None = None
+    departement_domicile_id: uuid.UUID | None = None
+    commune_domicile_id: uuid.UUID | None = None
+    region_militantisme_id: uuid.UUID | None = None
+    departement_militantisme_id: uuid.UUID | None = None
+    commune_militantisme_id: uuid.UUID | None = None
 
     region_domicile: RegionOut | None = None
     departement_domicile: DepartementOut | None = None
@@ -59,6 +61,14 @@ class AdhesionDetailOut(BaseModel):
     region_militantisme: RegionOut | None = None
     departement_militantisme: DepartementOut | None = None
     commune_militantisme: CommuneOut | None = None
+
+    pays_domicile_id: uuid.UUID | None = None
+    ville_domicile: str | None = None
+    pays_militantisme_id: uuid.UUID | None = None
+    ville_militantisme: str | None = None
+
+    pays_domicile: PaysOut | None = None
+    pays_militantisme: PaysOut | None = None
 
     fonction_professionnelle: str
     engagement: EngagementType

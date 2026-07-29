@@ -30,12 +30,17 @@ class CreateAdhesionInput:
     cni: str
     carte_electeur: str | None
     carte_pastef: str | None
-    region_domicile_id: uuid.UUID
-    departement_domicile_id: uuid.UUID
-    commune_domicile_id: uuid.UUID
-    region_militantisme_id: uuid.UUID
-    departement_militantisme_id: uuid.UUID
+    est_diaspora: bool
+    region_domicile_id: uuid.UUID | None
+    departement_domicile_id: uuid.UUID | None
+    commune_domicile_id: uuid.UUID | None
+    region_militantisme_id: uuid.UUID | None
+    departement_militantisme_id: uuid.UUID | None
     commune_militantisme_id: uuid.UUID | None
+    pays_domicile_id: uuid.UUID | None
+    ville_domicile: str | None
+    pays_militantisme_id: uuid.UUID | None
+    ville_militantisme: str | None
     fonction_professionnelle: str
     engagement: EngagementType
     commissariat: str
@@ -118,18 +123,21 @@ class AdhesionService:
         if data.montant_adhesion < 0:
             raise HTTPException(status_code=400, detail="Montant invalide")
 
-        await self._validate_region_departement(region_id=data.region_domicile_id, departement_id=data.departement_domicile_id)
-        await self._validate_departement_commune(
-            departement_id=data.departement_domicile_id, commune_id=data.commune_domicile_id
-        )
-
-        await self._validate_region_departement(
-            region_id=data.region_militantisme_id, departement_id=data.departement_militantisme_id
-        )
-        if data.commune_militantisme_id is not None:
-            await self._validate_departement_commune(
-                departement_id=data.departement_militantisme_id, commune_id=data.commune_militantisme_id
-            )
+        if data.est_diaspora:
+            if not data.pays_domicile_id:
+                raise HTTPException(status_code=400, detail="Le pays de domicile est requis pour un adhérent de la diaspora")
+            if not data.ville_domicile or not data.ville_domicile.strip():
+                raise HTTPException(status_code=400, detail="La ville de domicile est requise pour un adhérent de la diaspora")
+        else:
+            if not data.region_domicile_id or not data.departement_domicile_id or not data.commune_domicile_id:
+                raise HTTPException(status_code=400, detail="La région, le département et la commune de domicile sont requis")
+            if not data.region_militantisme_id or not data.departement_militantisme_id:
+                raise HTTPException(status_code=400, detail="La région et le département de militantisme sont requis")
+            await self._validate_region_departement(region_id=data.region_domicile_id, departement_id=data.departement_domicile_id)
+            await self._validate_departement_commune(departement_id=data.departement_domicile_id, commune_id=data.commune_domicile_id)
+            await self._validate_region_departement(region_id=data.region_militantisme_id, departement_id=data.departement_militantisme_id)
+            if data.commune_militantisme_id is not None:
+                await self._validate_departement_commune(departement_id=data.departement_militantisme_id, commune_id=data.commune_militantisme_id)
 
         payload_dict = data.__dict__
         idem_hash = None
@@ -158,12 +166,17 @@ class AdhesionService:
             cni=data.cni,
             carte_electeur=data.carte_electeur,
             carte_pastef=data.carte_pastef,
+            est_diaspora=data.est_diaspora,
             region_domicile_id=data.region_domicile_id,
             departement_domicile_id=data.departement_domicile_id,
             commune_domicile_id=data.commune_domicile_id,
             region_militantisme_id=data.region_militantisme_id,
             departement_militantisme_id=data.departement_militantisme_id,
             commune_militantisme_id=data.commune_militantisme_id,
+            pays_domicile_id=data.pays_domicile_id,
+            ville_domicile=data.ville_domicile,
+            pays_militantisme_id=data.pays_militantisme_id,
+            ville_militantisme=data.ville_militantisme,
             fonction_professionnelle=data.fonction_professionnelle,
             engagement=data.engagement,
             commissariat=data.commissariat,
