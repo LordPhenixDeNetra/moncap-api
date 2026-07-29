@@ -5,6 +5,7 @@ from enum import StrEnum
 
 class AdhesionStatus(StrEnum):
     en_attente = "en_attente"
+    validee_accueil = "validee_accueil"
     validee = "validee"
     rejetee = "rejetee"
     complement = "complement"
@@ -28,6 +29,7 @@ class PaymentMode(StrEnum):
 
 class AppRole(StrEnum):
     admin = "admin"
-    moderator = "moderator"
+    comite_accueil = "comite_accueil"
+    comite_directoire = "comite_directoire"
     user = "user"
 

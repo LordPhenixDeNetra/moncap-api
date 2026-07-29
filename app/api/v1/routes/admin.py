@@ -77,7 +77,7 @@ async def list_adhesions(
     "/adhesions/{adhesion_id}",
     response_model=AdminUpdateAdhesionResponse,
     summary="Mettre à jour le statut d'une adhésion",
-    description="Permet de valider ou rejeter une demande d'adhésion. Un motif est obligatoire en cas de rejet.",
+    description="Permet de demander un complément d'information ou de rejeter une demande d'adhésion. Un motif est obligatoire en cas de rejet.",
 )
 async def update_adhesion(
     adhesion_id: uuid.UUID,
@@ -85,6 +85,9 @@ async def update_adhesion(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
+    if payload.statut not in [AdhesionStatus.rejetee, AdhesionStatus.complement]:
+        raise HTTPException(status_code=400, detail="Cette action n'est pas autorisée pour ce statut")
+
     if payload.statut == AdhesionStatus.rejetee and not (payload.motif_rejet and payload.motif_rejet.strip()):
         raise HTTPException(status_code=400, detail="Motif requis si rejet")
     before = await AdhesionRepository(db).get_by_id(adhesion_id)

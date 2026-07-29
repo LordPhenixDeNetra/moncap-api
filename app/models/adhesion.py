@@ -66,6 +66,27 @@ class Adhesion(Base):
         index=True,
     )
     motif_rejet: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    validation_accueil_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id"), nullable=True
+    )
+    validation_accueil_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    validation_accueil_user = relationship(
+        "User", foreign_keys=[validation_accueil_user_id]
+    )
+
+    validation_directoire_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id"), nullable=True
+    )
+    validation_directoire_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    validation_directoire_user = relationship(
+        "User", foreign_keys=[validation_directoire_user_id]
+    )
+
     certification: Mapped[bool] = mapped_column(Boolean, server_default="0")
 
     idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)

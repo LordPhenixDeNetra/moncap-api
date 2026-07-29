@@ -229,6 +229,44 @@ class AdhesionRepository:
         )
         return res.rowcount or 0
 
+    async def update_status_accueil(
+        self,
+        *,
+        adhesion_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> int:
+        res = await self.session.execute(
+            update(Adhesion)
+            .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.statut == AdhesionStatus.en_attente)
+            .values(
+                statut=AdhesionStatus.validee_accueil,
+                validation_accueil_user_id=user_id,
+                validation_accueil_at=func.now(),
+                updated_at=func.now(),
+            )
+        )
+        return res.rowcount or 0
+
+    async def update_status_directoire(
+        self,
+        *,
+        adhesion_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> int:
+        res = await self.session.execute(
+            update(Adhesion)
+            .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.statut == AdhesionStatus.validee_accueil)
+            .values(
+                statut=AdhesionStatus.validee,
+                validation_directoire_user_id=user_id,
+                validation_directoire_at=func.now(),
+                updated_at=func.now(),
+            )
+        )
+        return res.rowcount or 0
+
     async def update_payment(
         self,
         *,
