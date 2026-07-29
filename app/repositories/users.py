@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import AppRole
@@ -34,4 +35,10 @@ class UserRepository:
     async def add_role(self, *, user_id: uuid.UUID, role: AppRole) -> None:
         self.session.add(UserRole(user_id=user_id, role=role))
         await self.session.flush()
+
+    async def list_all(self) -> list[User]:
+        res = await self.session.execute(
+            select(User).options(selectinload(User.roles)).order_by(User.created_at)
+        )
+        return list(res.scalars().unique().all())
 
