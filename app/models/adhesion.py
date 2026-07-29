@@ -63,6 +63,8 @@ class Adhesion(Base):
     fonction_professionnelle: Mapped[str] = mapped_column(String(200))
     engagement: Mapped[list] = mapped_column(JSON, default=list)
     commissariat: Mapped[str] = mapped_column(String(200), index=True)
+    commissariat_scientifique_principal: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    commissariat_scientifique_secondaire: Mapped[str | None] = mapped_column(String(200), nullable=True)
     mode_paiement: Mapped[PaymentMode] = mapped_column(
         SAEnum(PaymentMode, name="payment_mode", native_enum=False, validate_strings=True),
     )

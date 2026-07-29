@@ -224,6 +224,8 @@ async def export_csv(
                 "paiement_confirme",
                 "reference_paiement",
                 "commissariat",
+                "commissariat_scientifique_principal",
+                "commissariat_scientifique_secondaire",
                 "statut",
                 "created_at",
             ]
@@ -252,6 +254,8 @@ async def export_csv(
                     x["paiement_confirme"],
                     x["reference_paiement"],
                     x["commissariat"],
+                    x["commissariat_scientifique_principal"],
+                    x["commissariat_scientifique_secondaire"],
                     x["statut"].value if hasattr(x["statut"], "value") else str(x["statut"]),
                     x["created_at"].isoformat() if x["created_at"] else "",
                 ]
@@ -311,6 +315,8 @@ async def export_xlsx(
             "paiement_confirme",
             "reference_paiement",
             "commissariat",
+            "commissariat_scientifique_principal",
+            "commissariat_scientifique_secondaire",
             "statut",
             "created_at",
         ]
@@ -339,6 +345,8 @@ async def export_xlsx(
                 x["paiement_confirme"],
                 x["reference_paiement"],
                 x["commissariat"],
+                x["commissariat_scientifique_principal"],
+                x["commissariat_scientifique_secondaire"],
                 statut,
                 created_at,
             ]

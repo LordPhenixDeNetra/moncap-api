@@ -236,6 +236,8 @@ class AdhesionRepository:
                 Adhesion.paiement_confirme.label("paiement_confirme"),
                 Adhesion.reference_paiement.label("reference_paiement"),
                 Adhesion.commissariat.label("commissariat"),
+                Adhesion.commissariat_scientifique_principal.label("commissariat_scientifique_principal"),
+                Adhesion.commissariat_scientifique_secondaire.label("commissariat_scientifique_secondaire"),
                 Adhesion.statut.label("statut"),
                 Adhesion.created_at.label("created_at"),
             )

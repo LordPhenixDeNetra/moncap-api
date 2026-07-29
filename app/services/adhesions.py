@@ -47,6 +47,8 @@ class CreateAdhesionInput:
     fonction_professionnelle: str
     engagement: list[EngagementType]
     commissariat: str
+    commissariat_scientifique_principal: str | None
+    commissariat_scientifique_secondaire: str | None
     mode_paiement: PaymentMode
     montant_adhesion: int
     certification: bool
@@ -128,6 +130,12 @@ class AdhesionService:
         if not data.engagement:
             raise HTTPException(status_code=400, detail="Au moins un type d'engagement est requis")
 
+        if data.commissariat.strip().lower() == "commissariat scientifique":
+            if not data.commissariat_scientifique_principal or not data.commissariat_scientifique_principal.strip():
+                raise HTTPException(status_code=400, detail="Le commissariat scientifique principal est requis")
+            if not data.commissariat_scientifique_secondaire or not data.commissariat_scientifique_secondaire.strip():
+                raise HTTPException(status_code=400, detail="Le commissariat scientifique secondaire est requis")
+
         if data.est_diaspora:
             if not data.pays_domicile_id:
                 raise HTTPException(status_code=400, detail="Le pays de domicile est requis pour un adhérent de la diaspora")
@@ -188,6 +196,8 @@ class AdhesionService:
             fonction_professionnelle=data.fonction_professionnelle,
             engagement=[e.value for e in data.engagement],
             commissariat=data.commissariat,
+            commissariat_scientifique_principal=data.commissariat_scientifique_principal,
+            commissariat_scientifique_secondaire=data.commissariat_scientifique_secondaire,
             mode_paiement=data.mode_paiement,
             montant_adhesion=data.montant_adhesion,
             reference_paiement=data.reference_paiement,

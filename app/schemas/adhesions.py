@@ -77,6 +77,8 @@ class AdhesionDetailOut(BaseModel):
     fonction_professionnelle: str
     engagement: list[EngagementType]
     commissariat: str
+    commissariat_scientifique_principal: str | None = None
+    commissariat_scientifique_secondaire: str | None = None
     mode_paiement: PaymentMode
     montant_adhesion: int
     paiement_confirme: bool
