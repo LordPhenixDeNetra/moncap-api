@@ -28,8 +28,8 @@ class UserRepository:
         res = await self.session.execute(select(UserRole.role).where(UserRole.user_id == user_id))
         return [r.value if isinstance(r, AppRole) else str(r) for (r,) in res.all()]
 
-    async def create_user(self, *, email: str, password_hash: str) -> User:
-        user = User(email=email, password_hash=password_hash)
+    async def create_user(self, *, email: str, password_hash: str, nom: str, prenom: str) -> User:
+        user = User(email=email, password_hash=password_hash, nom=nom, prenom=prenom)
         self.session.add(user)
         await self.session.flush()
         return user
@@ -54,6 +54,13 @@ class UserRepository:
         user = await self.get_by_id(user_id)
         if user:
             user.password_hash = password_hash
+            await self.session.flush()
+
+    async def update_nom_prenom(self, *, user_id: uuid.UUID, nom: str, prenom: str) -> None:
+        user = await self.get_by_id(user_id)
+        if user:
+            user.nom = nom
+            user.prenom = prenom
             await self.session.flush()
 
     async def delete_user(self, *, user_id: uuid.UUID) -> int:

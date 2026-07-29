@@ -11,6 +11,8 @@ from app.models.enums import AppRole
 class UserSchema(BaseModel):
     id: uuid.UUID
     email: EmailStr
+    nom: str
+    prenom: str
     roles: list[str]
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
@@ -28,6 +30,8 @@ class UserListResponse(BaseModel):
 class UserCreateRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=200)
+    nom: str = Field(min_length=1, max_length=200)
+    prenom: str = Field(min_length=1, max_length=200)
     roles: list[AppRole]
 
 
@@ -38,6 +42,8 @@ class UserCreateResponse(BaseModel):
 class UserUpdateRequest(BaseModel):
     email: EmailStr | None = None
     password: str | None = Field(default=None, min_length=8, max_length=200)
+    nom: str | None = Field(default=None, min_length=1, max_length=200)
+    prenom: str | None = Field(default=None, min_length=1, max_length=200)
     roles: list[AppRole] | None = None
 
 

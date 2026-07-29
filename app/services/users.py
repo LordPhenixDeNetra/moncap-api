@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,8 @@ from app.repositories.users import UserRepository
 class CreateUserInput:
     email: str
     password: str
+    nom: str
+    prenom: str
     roles: list[AppRole]
 
 
@@ -23,6 +25,8 @@ class CreateUserInput:
 class UpdateUserInput:
     email: str | None
     password: str | None
+    nom: str | None
+    prenom: str | None
     roles: list[AppRole] | None
 
 
@@ -51,7 +55,12 @@ class UserService:
             raise HTTPException(status_code=400, detail="Au moins un rôle est requis")
 
         password_hash = hash_password(data.password)
-        user = await self.users.create_user(email=email, password_hash=password_hash)
+        user = await self.users.create_user(
+            email=email,
+            password_hash=password_hash,
+            nom=data.nom,
+            prenom=data.prenom,
+        )
 
         for role in data.roles:
             await self.users.add_role(user_id=user.id, role=role)
@@ -74,6 +83,12 @@ class UserService:
         if data.password is not None:
             password_hash = hash_password(data.password)
             await self.users.update_password(user_id=user_id, password_hash=password_hash)
+
+        if data.nom is not None:
+            await self.users.update_nom_prenom(user_id=user_id, nom=data.nom, prenom=user.prenom)
+
+        if data.prenom is not None:
+            await self.users.update_nom_prenom(user_id=user_id, nom=user.nom if data.nom is None else data.nom, prenom=data.prenom)
 
         if data.roles is not None:
             if not data.roles:

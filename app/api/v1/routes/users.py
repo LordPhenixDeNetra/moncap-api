@@ -30,6 +30,8 @@ def _build_user_schema(user) -> UserSchema:
     return UserSchema(
         id=user.id,
         email=user.email,
+        nom=user.nom,
+        prenom=user.prenom,
         roles=[r.role.value if hasattr(r.role, "value") else str(r.role) for r in user.roles],
         createdAt=user.created_at,
         updatedAt=user.updated_at,
@@ -65,6 +67,8 @@ async def create_user(
         CreateUserInput(
             email=payload.email,
             password=payload.password,
+            nom=payload.nom,
+            prenom=payload.prenom,
             roles=payload.roles,
         )
     )
@@ -89,7 +93,7 @@ async def get_user(
     "/{user_id}",
     response_model=UserUpdateResponse,
     summary="Mettre à jour un utilisateur",
-    description="Permet aux administrateurs de modifier l'email, le mot de passe ou les rôles d'un utilisateur.",
+    description="Permet aux administrateurs de modifier l'email, le mot de passe, le nom, le prénom ou les rôles d'un utilisateur.",
 )
 async def update_user(
     user_id: uuid.UUID,
@@ -101,6 +105,8 @@ async def update_user(
         UpdateUserInput(
             email=payload.email,
             password=payload.password,
+            nom=payload.nom,
+            prenom=payload.prenom,
             roles=payload.roles,
         ),
     )
