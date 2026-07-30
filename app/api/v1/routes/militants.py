@@ -46,30 +46,6 @@ async def count_militants(
 
 
 @router.get(
-    "/stats/{dimension}",
-    response_model=MilitantsStatsResponse,
-    summary="Statistiques militants",
-    description="Retourne des agrégations (comptages) de militants par région/département/commune/pays/ville.",
-)
-async def militants_stats(
-    dimension: Dimension,
-    mode: GeoMode = "domicile",
-    commissariat: str | None = None,
-    from_date: date | None = None,
-    to_date: date | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    rows = await MilitantsService(db).stats(
-        dimension=dimension,
-        mode=mode,
-        commissariat=commissariat,
-        from_date=from_date,
-        to_date=to_date,
-    )
-    return {"data": [{"id": r.id, "label": r.label, "count": r.count} for r in rows]}
-
-
-@router.get(
     "/stats/commissariats",
     response_model=MilitantsStatsResponse,
     summary="Statistiques militants par commissariat",
@@ -98,6 +74,29 @@ async def militants_stats_diaspora(
 ):
     split = await MilitantsService(db).diaspora_split(commissariat=commissariat, from_date=from_date, to_date=to_date)
     return {"data": {"diaspora": split.diaspora, "local": split.local}}
+
+@router.get(
+    "/stats/{dimension}",
+    response_model=MilitantsStatsResponse,
+    summary="Statistiques militants",
+    description="Retourne des agrégations (comptages) de militants par région/département/commune/pays/ville.",
+)
+async def militants_stats(
+    dimension: Dimension,
+    mode: GeoMode = "domicile",
+    commissariat: str | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await MilitantsService(db).stats(
+        dimension=dimension,
+        mode=mode,
+        commissariat=commissariat,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    return {"data": [{"id": r.id, "label": r.label, "count": r.count} for r in rows]}
 
 
 @router.get(
