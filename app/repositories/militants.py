@@ -6,6 +6,7 @@ from typing import Literal
 
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.adhesion import Adhesion
 from app.models.enums import AdhesionStatus
@@ -18,6 +19,18 @@ TimeInterval = Literal["day", "week", "month"]
 class MilitantsRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    def _with_geo(self):
+        return (
+            selectinload(Adhesion.region_domicile),
+            selectinload(Adhesion.departement_domicile),
+            selectinload(Adhesion.commune_domicile),
+            selectinload(Adhesion.region_militantisme),
+            selectinload(Adhesion.departement_militantisme),
+            selectinload(Adhesion.commune_militantisme),
+            selectinload(Adhesion.pays_domicile),
+            selectinload(Adhesion.pays_militantisme),
+        )
 
     def _validated_where(
         self,
@@ -46,6 +59,43 @@ class MilitantsRepository:
             self._validated_where(commissariat=commissariat, from_date=from_date, to_date=to_date)
         )
         return int((await self.session.execute(qy)).scalar_one())
+
+    async def lookup_validated(
+        self,
+        *,
+        adhesion_id: uuid.UUID | None,
+        email: str | None,
+        cni: str | None,
+        tel_mobile: str | None,
+        carte_pastef: str | None,
+    ) -> Adhesion | None:
+        criteria = [
+            ("id", adhesion_id),
+            ("email", email),
+            ("cni", cni),
+            ("tel_mobile", tel_mobile),
+            ("carte_pastef", carte_pastef),
+        ]
+        provided = [(k, v) for (k, v) in criteria if v is not None and str(v).strip() != ""]
+        if len(provided) != 1:
+            raise ValueError("Un seul critère de recherche doit être fourni")
+
+        key, value = provided[0]
+        where = [Adhesion.statut == AdhesionStatus.validee]
+        if key == "id":
+            where.append(Adhesion.id == value)
+        elif key == "email":
+            where.append(Adhesion.email == str(value).strip().lower())
+        elif key == "cni":
+            where.append(Adhesion.cni == str(value).strip())
+        elif key == "tel_mobile":
+            where.append(Adhesion.tel_mobile == str(value).strip())
+        else:
+            where.append(Adhesion.carte_pastef == str(value).strip())
+
+        qy = select(Adhesion).where(and_(*where)).order_by(desc(Adhesion.created_at)).limit(1).options(*self._with_geo())
+        res = await self.session.execute(qy)
+        return res.scalar_one_or_none()
 
     async def stats_by_region(
         self,

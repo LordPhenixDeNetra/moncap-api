@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from typing import Literal
 
@@ -13,6 +14,7 @@ from app.schemas.militants import (
     MilitantsCountResponse,
     MilitantsDiasporaResponse,
     MilitantsHierarchyResponse,
+    MilitantLookupResponse,
     MilitantsStatsResponse,
     MilitantsTimeseriesResponse,
 )
@@ -153,4 +155,49 @@ async def militants_hierarchy(
             }
             for n in nodes
         ]
+    }
+
+
+@router.get(
+    "/lookup",
+    response_model=MilitantLookupResponse,
+    summary="Récupérer un militant validé",
+    description="Retourne la fiche d'un adhérent validé (statut=validee) via un critère unique (id/email/cni/tel_mobile/carte_pastef).",
+)
+async def lookup_militant(
+    id: uuid.UUID | None = None,
+    email: str | None = None,
+    cni: str | None = None,
+    tel_mobile: str | None = None,
+    carte_pastef: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    adhesion = await MilitantsService(db).lookup_validated(
+        adhesion_id=id,
+        email=email,
+        cni=cni,
+        tel_mobile=tel_mobile,
+        carte_pastef=carte_pastef,
+    )
+    return {
+        "data": {
+            "id": adhesion.id,
+            "nom": adhesion.nom,
+            "prenom": adhesion.prenom,
+            "email": adhesion.email,
+            "tel_mobile": adhesion.tel_mobile,
+            "cni": adhesion.cni,
+            "carte_pastef": adhesion.carte_pastef,
+            "photo_url": adhesion.photo_url,
+            "commissariat": adhesion.commissariat,
+            "region_domicile_id": adhesion.region_domicile_id,
+            "departement_domicile_id": adhesion.departement_domicile_id,
+            "commune_domicile_id": adhesion.commune_domicile_id,
+            "pays_domicile_id": adhesion.pays_domicile_id,
+            "ville_domicile": adhesion.ville_domicile,
+            "region_domicile": adhesion.region_domicile,
+            "departement_domicile": adhesion.departement_domicile,
+            "commune_domicile": adhesion.commune_domicile,
+            "pays_domicile": adhesion.pays_domicile,
+        }
     }

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.militants import GeoMode, MilitantsRepository, TimeInterval
@@ -161,3 +162,27 @@ class MilitantsService:
             )
             for (dep_id, dep_nom, count) in deps
         ]
+
+    async def lookup_validated(
+        self,
+        *,
+        adhesion_id: uuid.UUID | None,
+        email: str | None,
+        cni: str | None,
+        tel_mobile: str | None,
+        carte_pastef: str | None,
+    ):
+        try:
+            adhesion = await self.repo.lookup_validated(
+                adhesion_id=adhesion_id,
+                email=email,
+                cni=cni,
+                tel_mobile=tel_mobile,
+                carte_pastef=carte_pastef,
+            )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Un seul critère de recherche doit être fourni")
+
+        if not adhesion:
+            raise HTTPException(status_code=404, detail="Militant introuvable")
+        return adhesion
