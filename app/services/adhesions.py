@@ -276,3 +276,170 @@ class AdhesionService:
             )
         await self.session.refresh(adhesion)
         return adhesion
+
+    async def admin_update_info(self, *, adhesion_id: uuid.UUID, payload: dict) -> Adhesion:
+        adhesion = await self.adhesions.get_by_id(adhesion_id)
+        if not adhesion:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Adhésion introuvable"})
+
+        values: dict = {}
+
+        if "email" in payload and payload["email"] is not None:
+            email_norm = normalize_email(str(payload["email"]))
+            conflict = await self.adhesions.get_conflict_by_email(email_norm)
+            if conflict and conflict[0] != adhesion.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "DUPLICATE_EMAIL", "field": "email", "message": "Une adhésion existe déjà avec cet email"},
+                )
+            values["email"] = email_norm
+
+        if "cni" in payload and payload["cni"] is not None:
+            cni_norm = str(payload["cni"]).strip()
+            conflict = await self.adhesions.get_conflict_by_cni(cni_norm)
+            if conflict and conflict[0] != adhesion.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "DUPLICATE_CNI", "field": "cni", "message": "Une adhésion existe déjà avec ce CNI"},
+                )
+            values["cni"] = cni_norm
+
+        if "carte_electeur" in payload and payload["carte_electeur"] is not None:
+            raw = str(payload["carte_electeur"]).strip()
+            carte_electeur_norm = raw if raw else None
+            if carte_electeur_norm is not None:
+                conflict = await self.adhesions.get_conflict_by_carte_electeur(carte_electeur_norm)
+                if conflict and conflict[0] != adhesion.id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "DUPLICATE_CARTE_ELECTEUR",
+                            "field": "carte_electeur",
+                            "message": "Une adhésion existe déjà avec cette carte d'électeur",
+                        },
+                    )
+            values["carte_electeur"] = carte_electeur_norm
+
+        if "engagement" in payload and payload["engagement"] is not None:
+            values["engagement"] = [e.value if isinstance(e, EngagementType) else str(e) for e in payload["engagement"]]
+
+        passthrough = {
+            "nom",
+            "prenom",
+            "date_naissance",
+            "lieu_naissance",
+            "profession",
+            "tel_mobile",
+            "tel_fixe",
+            "carte_pastef",
+            "niveau_etude",
+            "annees_experience",
+            "biographie",
+            "est_diaspora",
+            "region_domicile_id",
+            "departement_domicile_id",
+            "commune_domicile_id",
+            "region_militantisme_id",
+            "departement_militantisme_id",
+            "commune_militantisme_id",
+            "pays_domicile_id",
+            "ville_domicile",
+            "pays_militantisme_id",
+            "ville_militantisme",
+            "fonction_professionnelle",
+            "commissariat",
+            "commissariat_scientifique_principal",
+            "commissariat_scientifique_secondaire",
+            "mode_paiement",
+            "montant_adhesion",
+            "reference_paiement",
+            "certification",
+        }
+        for k in passthrough:
+            if k in payload and payload[k] is not None:
+                values[k] = payload[k]
+
+        def _final(name: str):
+            return values.get(name, getattr(adhesion, name))
+
+        commissariat = str(_final("commissariat") or "")
+        if commissariat.strip().lower() == "commissariat scientifique":
+            principal = _final("commissariat_scientifique_principal")
+            secondaire = _final("commissariat_scientifique_secondaire")
+            if not principal or not str(principal).strip():
+                raise HTTPException(status_code=400, detail={"code": "MISSING_FIELD", "field": "commissariat_scientifique_principal", "message": "Le commissariat scientifique principal est requis"})
+            if not secondaire or not str(secondaire).strip():
+                raise HTTPException(status_code=400, detail={"code": "MISSING_FIELD", "field": "commissariat_scientifique_secondaire", "message": "Le commissariat scientifique secondaire est requis"})
+
+        est_diaspora = bool(_final("est_diaspora"))
+        if est_diaspora:
+            if not _final("pays_domicile_id"):
+                raise HTTPException(status_code=400, detail={"code": "MISSING_FIELD", "field": "pays_domicile_id", "message": "Le pays de domicile est requis pour un adhérent de la diaspora"})
+            ville = _final("ville_domicile")
+            if not ville or not str(ville).strip():
+                raise HTTPException(status_code=400, detail={"code": "MISSING_FIELD", "field": "ville_domicile", "message": "La ville de domicile est requise pour un adhérent de la diaspora"})
+        else:
+            if not _final("region_domicile_id") or not _final("departement_domicile_id") or not _final("commune_domicile_id"):
+                raise HTTPException(status_code=400, detail={"code": "MISSING_FIELD", "message": "La région, le département et la commune de domicile sont requis"})
+            if not _final("region_militantisme_id") or not _final("departement_militantisme_id"):
+                raise HTTPException(status_code=400, detail={"code": "MISSING_FIELD", "message": "La région et le département de militantisme sont requis"})
+            await self._validate_region_departement(region_id=_final("region_domicile_id"), departement_id=_final("departement_domicile_id"))
+            await self._validate_departement_commune(departement_id=_final("departement_domicile_id"), commune_id=_final("commune_domicile_id"))
+            await self._validate_region_departement(region_id=_final("region_militantisme_id"), departement_id=_final("departement_militantisme_id"))
+            if _final("commune_militantisme_id") is not None:
+                await self._validate_departement_commune(departement_id=_final("departement_militantisme_id"), commune_id=_final("commune_militantisme_id"))
+
+        if not values:
+            return adhesion
+
+        rowcount = await self.adhesions.update_fields(adhesion_id=adhesion_id, values=values)
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Adhésion introuvable"})
+        await self.session.commit()
+        updated = await self.adhesions.get_by_id(adhesion_id)
+        if not updated:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Adhésion introuvable"})
+        return updated
+
+    async def admin_update_files(
+        self,
+        *,
+        adhesion_id: uuid.UUID,
+        profile_photo: UploadFile | None,
+        photo_recto: UploadFile | None,
+        photo_verso: UploadFile | None,
+        cv: UploadFile | None,
+    ) -> Adhesion:
+        adhesion = await self.adhesions.get_by_id(adhesion_id)
+        if not adhesion:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Adhésion introuvable"})
+
+        values: dict = {}
+        if profile_photo is not None:
+            values["profile_photo_url"] = await self.storage.save(file=profile_photo, subdir="profile_photos")
+        if photo_recto is not None:
+            url = await self.storage.save(file=photo_recto, subdir="photos")
+            values["photo_recto_url"] = url
+            values["photo_url"] = url
+        if photo_verso is not None:
+            values["photo_verso_url"] = await self.storage.save(file=photo_verso, subdir="photos")
+        if cv is not None:
+            values["cv_url"] = await self.storage.save(file=cv, subdir="cvs")
+
+        if not values:
+            return adhesion
+
+        rowcount = await self.adhesions.update_fields(adhesion_id=adhesion_id, values=values)
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Adhésion introuvable"})
+        await self.session.commit()
+        updated = await self.adhesions.get_by_id(adhesion_id)
+        if not updated:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Adhésion introuvable"})
+        return updated
+
+    async def admin_soft_delete(self, *, adhesion_id: uuid.UUID) -> None:
+        rowcount = await self.adhesions.soft_delete(adhesion_id=adhesion_id)
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Adhésion introuvable"})
+        await self.session.commit()

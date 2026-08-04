@@ -5,7 +5,7 @@ import io
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,7 @@ from app.schemas.admin import (
     AdminAdhesionListResponse,
     AdminConfirmPaymentRequest,
     AdminUpdateAdhesionRequest,
+    AdminUpdateAdhesionInfoRequest,
     AdminUpdateAdhesionResponse,
 )
 from app.schemas.adhesions import AdhesionDetailResponse
@@ -144,6 +145,58 @@ async def lookup_adhesion(
         adhesion_id=id, email=email, cni=cni, tel_mobile=tel_mobile
     )
     return {"data": adhesion}
+
+@write_router.patch(
+    "/adhesions/{adhesion_id}/info",
+    response_model=AdhesionDetailResponse,
+    summary="Mettre à jour les informations d'une adhésion",
+    description="Permet à l’admin de corriger les informations d’une adhésion (hors suppression).",
+)
+async def update_adhesion_info(
+    adhesion_id: uuid.UUID,
+    payload: AdminUpdateAdhesionInfoRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    updated = await AdhesionService(db).admin_update_info(adhesion_id=adhesion_id, payload=payload.model_dump(exclude_unset=True))
+    return {"data": updated}
+
+
+@write_router.patch(
+    "/adhesions/{adhesion_id}/files",
+    response_model=AdhesionDetailResponse,
+    summary="Remplacer des fichiers d'une adhésion",
+    description="Permet à l’admin de remplacer profile_photo, photo_recto, photo_verso et/ou cv.",
+)
+async def update_adhesion_files(
+    adhesion_id: uuid.UUID,
+    profile_photo: UploadFile | None = File(None),
+    photo_recto: UploadFile | None = File(None),
+    photo_verso: UploadFile | None = File(None),
+    cv: UploadFile | None = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    updated = await AdhesionService(db).admin_update_files(
+        adhesion_id=adhesion_id,
+        profile_photo=profile_photo,
+        photo_recto=photo_recto,
+        photo_verso=photo_verso,
+        cv=cv,
+    )
+    return {"data": updated}
+
+
+@write_router.delete(
+    "/adhesions/{adhesion_id}",
+    response_model=AdminUpdateAdhesionResponse,
+    summary="Supprimer une adhésion",
+    description="Suppression logique (soft delete). L’adhésion est masquée des listes/lookup.",
+)
+async def delete_adhesion(
+    adhesion_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    await AdhesionService(db).admin_soft_delete(adhesion_id=adhesion_id)
+    return {"data": {"deleted": True}}
 
 
 @write_router.patch(

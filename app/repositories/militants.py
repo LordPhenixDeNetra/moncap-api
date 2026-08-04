@@ -39,7 +39,7 @@ class MilitantsRepository:
         from_date: date | None,
         to_date: date | None,
     ):
-        where = [Adhesion.statut == AdhesionStatus.validee]
+        where = [Adhesion.statut == AdhesionStatus.validee, Adhesion.deleted_at.is_(None)]
         if commissariat:
             where.append(Adhesion.commissariat == commissariat)
         if from_date:
@@ -81,7 +81,7 @@ class MilitantsRepository:
             raise ValueError("Un seul critère de recherche doit être fourni")
 
         key, value = provided[0]
-        where = [Adhesion.statut == AdhesionStatus.validee]
+        where = [Adhesion.statut == AdhesionStatus.validee, Adhesion.deleted_at.is_(None)]
         if key == "id":
             where.append(Adhesion.id == value)
         elif key == "email":

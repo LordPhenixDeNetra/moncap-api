@@ -30,7 +30,11 @@ class AdhesionRepository:
         )
 
     async def get_by_idempotency_key(self, key: str) -> Adhesion | None:
-        res = await self.session.execute(select(Adhesion).where(Adhesion.idempotency_key == key))
+        res = await self.session.execute(
+            select(Adhesion)
+            .where(Adhesion.idempotency_key == key)
+            .where(Adhesion.deleted_at.is_(None))
+        )
         return res.scalar_one_or_none()
 
     async def create(self, adhesion: Adhesion) -> Adhesion:
@@ -39,7 +43,12 @@ class AdhesionRepository:
         return adhesion
 
     async def get_by_id(self, adhesion_id: uuid.UUID) -> Adhesion | None:
-        qy = select(Adhesion).where(Adhesion.id == adhesion_id).options(*self._with_geo())
+        qy = (
+            select(Adhesion)
+            .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.deleted_at.is_(None))
+            .options(*self._with_geo())
+        )
         res = await self.session.execute(qy)
         return res.scalar_one_or_none()
 
@@ -47,6 +56,7 @@ class AdhesionRepository:
         qy = (
             select(Adhesion)
             .where(Adhesion.email == email)
+            .where(Adhesion.deleted_at.is_(None))
             .order_by(desc(Adhesion.created_at))
             .limit(1)
             .options(*self._with_geo())
@@ -58,6 +68,7 @@ class AdhesionRepository:
         qy = (
             select(Adhesion)
             .where(Adhesion.cni == cni)
+            .where(Adhesion.deleted_at.is_(None))
             .order_by(desc(Adhesion.created_at))
             .limit(1)
             .options(*self._with_geo())
@@ -69,6 +80,7 @@ class AdhesionRepository:
         qy = (
             select(Adhesion)
             .where(Adhesion.tel_mobile == tel_mobile)
+            .where(Adhesion.deleted_at.is_(None))
             .order_by(desc(Adhesion.created_at))
             .limit(1)
             .options(*self._with_geo())
@@ -80,6 +92,7 @@ class AdhesionRepository:
         qy = (
             select(Adhesion.id, Adhesion.statut)
             .where(Adhesion.email == email)
+            .where(Adhesion.deleted_at.is_(None))
             .order_by(desc(Adhesion.created_at))
             .limit(1)
         )
@@ -93,6 +106,7 @@ class AdhesionRepository:
         qy = (
             select(Adhesion.id, Adhesion.statut)
             .where(Adhesion.cni == cni)
+            .where(Adhesion.deleted_at.is_(None))
             .order_by(desc(Adhesion.created_at))
             .limit(1)
         )
@@ -106,6 +120,7 @@ class AdhesionRepository:
         qy = (
             select(Adhesion.id, Adhesion.statut)
             .where(Adhesion.carte_electeur == carte_electeur)
+            .where(Adhesion.deleted_at.is_(None))
             .order_by(desc(Adhesion.created_at))
             .limit(1)
         )
@@ -117,7 +132,10 @@ class AdhesionRepository:
 
     async def list_by_email(self, email: str) -> list[Adhesion]:
         res = await self.session.execute(
-            select(Adhesion).where(Adhesion.email == email).order_by(desc(Adhesion.created_at))
+            select(Adhesion)
+            .where(Adhesion.email == email)
+            .where(Adhesion.deleted_at.is_(None))
+            .order_by(desc(Adhesion.created_at))
         )
         return list(res.scalars().all())
 
@@ -155,6 +173,7 @@ class AdhesionRepository:
         base = select(Adhesion)
         if where:
             base = base.where(and_(*where))
+        base = base.where(Adhesion.deleted_at.is_(None))
 
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_q)).scalar_one()
@@ -197,6 +216,7 @@ class AdhesionRepository:
         base = select(Adhesion)
         if where:
             base = base.where(and_(*where))
+        base = base.where(Adhesion.deleted_at.is_(None))
 
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_q)).scalar_one()
@@ -237,6 +257,7 @@ class AdhesionRepository:
 
         if where:
             qy = qy.where(and_(*where))
+        qy = qy.where(Adhesion.deleted_at.is_(None))
         return qy
 
     async def list_admin_export_rows(
@@ -310,6 +331,7 @@ class AdhesionRepository:
         res = await self.session.execute(
             update(Adhesion)
             .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.deleted_at.is_(None))
             .values(statut=statut, motif_rejet=motif_rejet, updated_at=func.now())
         )
         return res.rowcount or 0
@@ -324,6 +346,7 @@ class AdhesionRepository:
             update(Adhesion)
             .where(Adhesion.id == adhesion_id)
             .where(Adhesion.statut == AdhesionStatus.en_attente)
+            .where(Adhesion.deleted_at.is_(None))
             .values(
                 statut=AdhesionStatus.validee_accueil,
                 validation_accueil_user_id=user_id,
@@ -343,6 +366,7 @@ class AdhesionRepository:
             update(Adhesion)
             .where(Adhesion.id == adhesion_id)
             .where(Adhesion.statut == AdhesionStatus.validee_accueil)
+            .where(Adhesion.deleted_at.is_(None))
             .values(
                 statut=AdhesionStatus.validee,
                 validation_directoire_user_id=user_id,
@@ -362,10 +386,36 @@ class AdhesionRepository:
         res = await self.session.execute(
             update(Adhesion)
             .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.deleted_at.is_(None))
             .values(
                 paiement_confirme=paiement_confirme,
                 reference_paiement=reference_paiement,
                 updated_at=func.now(),
             )
+        )
+        return res.rowcount or 0
+
+    async def soft_delete(self, *, adhesion_id: uuid.UUID) -> int:
+        res = await self.session.execute(
+            update(Adhesion)
+            .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.deleted_at.is_(None))
+            .values(
+                deleted_at=func.now(),
+                updated_at=func.now(),
+                idempotency_key=None,
+                idempotency_hash=None,
+            )
+        )
+        return res.rowcount or 0
+
+    async def update_fields(self, *, adhesion_id: uuid.UUID, values: dict) -> int:
+        if not values:
+            return 0
+        res = await self.session.execute(
+            update(Adhesion)
+            .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.deleted_at.is_(None))
+            .values(**values, updated_at=func.now())
         )
         return res.rowcount or 0

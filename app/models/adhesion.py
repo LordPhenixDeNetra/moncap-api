@@ -24,9 +24,9 @@ class Adhesion(Base):
     profession: Mapped[str] = mapped_column(String(200))
     tel_mobile: Mapped[str] = mapped_column(String(50))
     tel_fixe: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    email: Mapped[str] = mapped_column(String(320), index=True, unique=True)
-    cni: Mapped[str] = mapped_column(String(100), index=True, unique=True)
-    carte_electeur: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    cni: Mapped[str] = mapped_column(String(100), index=True)
+    carte_electeur: Mapped[str | None] = mapped_column(String(100), nullable=True)
     carte_pastef: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     niveau_etude: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -110,3 +110,4 @@ class Adhesion(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
