@@ -195,8 +195,11 @@ async def valider_adhesion_accueil(
     if not before:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
 
-    if before.statut != AdhesionStatus.en_attente:
-        raise HTTPException(status_code=400, detail=f"L'adhésion n'est pas en attente de validation (statut actuel: {before.statut})")
+    if before.statut not in {AdhesionStatus.en_attente, AdhesionStatus.complement}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"L'adhésion n'est pas en attente de validation ou en complément (statut actuel: {before.statut})",
+        )
 
     rowcount = await AdhesionRepository(db).update_status_accueil(
         adhesion_id=adhesion_id,

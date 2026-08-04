@@ -345,7 +345,7 @@ class AdhesionRepository:
         res = await self.session.execute(
             update(Adhesion)
             .where(Adhesion.id == adhesion_id)
-            .where(Adhesion.statut == AdhesionStatus.en_attente)
+            .where(Adhesion.statut.in_([AdhesionStatus.en_attente, AdhesionStatus.complement]))
             .where(Adhesion.deleted_at.is_(None))
             .values(
                 statut=AdhesionStatus.validee_accueil,
