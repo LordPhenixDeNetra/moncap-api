@@ -30,6 +30,8 @@ router = APIRouter(
     dependencies=[Depends(require_roles(AppRole.admin, AppRole.comite_accueil, AppRole.comite_directoire))],
 )
 
+public_router = APIRouter(prefix="/militants")
+
 
 @router.get(
     "/count",
@@ -158,7 +160,7 @@ async def militants_hierarchy(
     }
 
 
-@router.get(
+@public_router.get(
     "/lookup",
     response_model=MilitantLookupResponse,
     summary="Récupérer un militant validé",
