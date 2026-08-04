@@ -191,6 +191,7 @@ async def lookup_militant(
             "cni": adhesion.cni,
             "carte_pastef": adhesion.carte_pastef,
             "photo_url": adhesion.photo_url,
+            "profile_photo_url": adhesion.profile_photo_url,
             "commissariat": adhesion.commissariat,
             "region_domicile_id": adhesion.region_domicile_id,
             "departement_domicile_id": adhesion.departement_domicile_id,

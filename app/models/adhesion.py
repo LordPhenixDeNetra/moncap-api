@@ -73,6 +73,7 @@ class Adhesion(Base):
     reference_paiement: Mapped[str | None] = mapped_column(String(200), nullable=True)
     cv_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    profile_photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     photo_recto_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     photo_verso_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     statut: Mapped[AdhesionStatus] = mapped_column(

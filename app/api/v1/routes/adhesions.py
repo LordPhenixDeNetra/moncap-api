@@ -65,6 +65,7 @@ async def create_adhesion(
     photo_recto: UploadFile | None = File(None),
     photo_verso: UploadFile = File(...),
     photo: UploadFile | None = File(None),
+    profile_photo: UploadFile | None = File(None),
     cv: UploadFile = File(...),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
@@ -113,6 +114,7 @@ async def create_adhesion(
         data=data,
         photo_recto=photo_recto_final,
         photo_verso=photo_verso,
+        profile_photo=profile_photo,
         cv=cv,
         idempotency_key=idempotency_key,
     )

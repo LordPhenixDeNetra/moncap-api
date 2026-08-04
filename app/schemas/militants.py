@@ -63,6 +63,7 @@ class MilitantLookupData(BaseModel):
     cni: str
     carte_pastef: str | None = None
     photo_url: str | None = None
+    profile_photo_url: str | None = None
     commissariat: str
 
     region_domicile_id: uuid.UUID | None = None

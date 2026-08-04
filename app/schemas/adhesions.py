@@ -86,6 +86,7 @@ class AdhesionDetailOut(BaseModel):
     cv_url: str | None
     photo_recto_url: str | None
     photo_verso_url: str | None
+    profile_photo_url: str | None = None
     statut: AdhesionStatus
     motif_rejet: str | None = Field(default=None, alias="motifRejet")
     certification: bool

@@ -107,11 +107,20 @@ class AdhesionService:
         if not commune or commune.departement_id != departement_id:
             raise HTTPException(status_code=400, detail="Commune incohérente avec le département")
 
-    def _idempotency_hash(self, data: dict, photo_recto: UploadFile, photo_verso: UploadFile, cv: UploadFile) -> str:
+    def _idempotency_hash(
+        self,
+        data: dict,
+        photo_recto: UploadFile,
+        photo_verso: UploadFile,
+        cv: UploadFile,
+        profile_photo: UploadFile | None,
+    ) -> str:
         payload = dict(data)
         payload["photo_recto_filename"] = photo_recto.filename
         payload["photo_verso_filename"] = photo_verso.filename
         payload["cv_filename"] = cv.filename
+        if profile_photo is not None:
+            payload["profile_photo_filename"] = profile_photo.filename
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
@@ -121,6 +130,7 @@ class AdhesionService:
         data: CreateAdhesionInput,
         photo_recto: UploadFile,
         photo_verso: UploadFile,
+        profile_photo: UploadFile | None,
         cv: UploadFile,
         idempotency_key: str | None,
     ) -> Adhesion:
@@ -157,7 +167,7 @@ class AdhesionService:
         idem_hash = None
         existing = None
         if idempotency_key:
-            idem_hash = self._idempotency_hash(payload_dict, photo_recto, photo_verso, cv)
+            idem_hash = self._idempotency_hash(payload_dict, photo_recto, photo_verso, cv, profile_photo)
             existing = await self.adhesions.get_by_idempotency_key(idempotency_key)
             if existing:
                 if existing.idempotency_hash and existing.idempotency_hash != idem_hash:
@@ -204,6 +214,9 @@ class AdhesionService:
         photo_recto_url = await self.storage.save(file=photo_recto, subdir="photos")
         photo_verso_url = await self.storage.save(file=photo_verso, subdir="photos")
         cv_url = await self.storage.save(file=cv, subdir="cvs")
+        profile_photo_url = (
+            await self.storage.save(file=profile_photo, subdir="profile_photos") if profile_photo is not None else None
+        )
 
         adhesion = Adhesion(
             nom=data.nom,
@@ -241,6 +254,7 @@ class AdhesionService:
             reference_paiement=data.reference_paiement,
             certification=data.certification,
             photo_url=photo_recto_url,
+            profile_photo_url=profile_photo_url,
             photo_recto_url=photo_recto_url,
             photo_verso_url=photo_verso_url,
             cv_url=cv_url,
