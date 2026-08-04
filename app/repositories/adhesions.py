@@ -76,6 +76,45 @@ class AdhesionRepository:
         res = await self.session.execute(qy)
         return res.scalar_one_or_none()
 
+    async def get_conflict_by_email(self, email: str) -> tuple[uuid.UUID, AdhesionStatus] | None:
+        qy = (
+            select(Adhesion.id, Adhesion.statut)
+            .where(Adhesion.email == email)
+            .order_by(desc(Adhesion.created_at))
+            .limit(1)
+        )
+        res = await self.session.execute(qy)
+        row = res.first()
+        if not row:
+            return None
+        return row[0], row[1]
+
+    async def get_conflict_by_cni(self, cni: str) -> tuple[uuid.UUID, AdhesionStatus] | None:
+        qy = (
+            select(Adhesion.id, Adhesion.statut)
+            .where(Adhesion.cni == cni)
+            .order_by(desc(Adhesion.created_at))
+            .limit(1)
+        )
+        res = await self.session.execute(qy)
+        row = res.first()
+        if not row:
+            return None
+        return row[0], row[1]
+
+    async def get_conflict_by_carte_electeur(self, carte_electeur: str) -> tuple[uuid.UUID, AdhesionStatus] | None:
+        qy = (
+            select(Adhesion.id, Adhesion.statut)
+            .where(Adhesion.carte_electeur == carte_electeur)
+            .order_by(desc(Adhesion.created_at))
+            .limit(1)
+        )
+        res = await self.session.execute(qy)
+        row = res.first()
+        if not row:
+            return None
+        return row[0], row[1]
+
     async def list_by_email(self, email: str) -> list[Adhesion]:
         res = await self.session.execute(
             select(Adhesion).where(Adhesion.email == email).order_by(desc(Adhesion.created_at))

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import normalize_email
@@ -163,6 +164,43 @@ class AdhesionService:
                     raise HTTPException(status_code=409, detail="Idempotency-Key déjà utilisée avec un autre payload")
                 return existing
 
+        email_norm = normalize_email(data.email)
+        conflict = await self.adhesions.get_conflict_by_email(email_norm)
+        if conflict:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DUPLICATE_EMAIL",
+                    "field": "email",
+                    "message": "Une adhésion existe déjà avec cet email",
+                },
+            )
+
+        cni_norm = str(data.cni).strip()
+        conflict = await self.adhesions.get_conflict_by_cni(cni_norm)
+        if conflict:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DUPLICATE_CNI",
+                    "field": "cni",
+                    "message": "Une adhésion existe déjà avec ce CNI",
+                },
+            )
+
+        if data.carte_electeur and str(data.carte_electeur).strip() != "":
+            carte_electeur_norm = str(data.carte_electeur).strip()
+            conflict = await self.adhesions.get_conflict_by_carte_electeur(carte_electeur_norm)
+            if conflict:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "DUPLICATE_CARTE_ELECTEUR",
+                        "field": "carte_electeur",
+                        "message": "Une adhésion existe déjà avec cette carte d'électeur",
+                    },
+                )
+
         photo_recto_url = await self.storage.save(file=photo_recto, subdir="photos")
         photo_verso_url = await self.storage.save(file=photo_verso, subdir="photos")
         cv_url = await self.storage.save(file=cv, subdir="cvs")
@@ -175,9 +213,9 @@ class AdhesionService:
             profession=data.profession,
             tel_mobile=data.tel_mobile,
             tel_fixe=data.tel_fixe,
-            email=normalize_email(data.email),
-            cni=data.cni,
-            carte_electeur=data.carte_electeur,
+            email=email_norm,
+            cni=cni_norm,
+            carte_electeur=carte_electeur_norm if data.carte_electeur and str(data.carte_electeur).strip() != "" else None,
             carte_pastef=data.carte_pastef,
             est_diaspora=data.est_diaspora,
             niveau_etude=data.niveau_etude,
@@ -210,7 +248,17 @@ class AdhesionService:
             idempotency_hash=idem_hash,
         )
 
-        await self.adhesions.create(adhesion)
-        await self.session.commit()
+        try:
+            await self.adhesions.create(adhesion)
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DUPLICATE_IDENTIFIER",
+                    "message": "Une adhésion existe déjà avec un identifiant déjà utilisé (email, cni ou carte_electeur)",
+                },
+            )
         await self.session.refresh(adhesion)
         return adhesion
