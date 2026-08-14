@@ -37,7 +37,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-    adhesion: Mapped["Adhesion | None"] = relationship("Adhesion", back_populates="user_account")  # type: ignore[assignment]
+    adhesion: Mapped["Adhesion | None"] = relationship(
+        "Adhesion",
+        back_populates="user_account",
+        foreign_keys=[adhesion_id],
+    )  # type: ignore[assignment]
 
 
 class UserRole(Base):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -43,6 +45,22 @@ class Settings(BaseSettings):
     mail_from: str | None = None
     mail_from_name: str = "MONCAP"
 
+    article_max_attachments: int = 5
+    article_max_attachment_mb: int = 20
+    article_max_cover_mb: int = 8
+    article_allowed_attachment_mimes: list[str] = Field(
+        default_factory=lambda: [
+            "application/pdf",
+            "image/jpeg",
+            "image/png",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ]
+    )
+    article_allowed_cover_mimes: list[str] = Field(
+        default_factory=lambda: ["image/jpeg", "image/png", "image/webp"]
+    )
+
     @field_validator("database_url")
     @classmethod
     def _normalize_database_url(cls, v: str) -> str:
@@ -54,7 +72,17 @@ class Settings(BaseSettings):
             return v.replace("postgres://", "postgresql+asyncpg://", 1)
         return v
 
+    @field_validator("article_allowed_attachment_mimes", "article_allowed_cover_mimes", mode="before")
+    @classmethod
+    def _split_mime_list(cls, v):
+        if isinstance(v, str):
+            return [s.strip().lower() for s in v.split(",") if s.strip()]
+        if isinstance(v, list):
+            return [str(s).strip().lower() for s in v if str(s).strip()]
+        return v
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+

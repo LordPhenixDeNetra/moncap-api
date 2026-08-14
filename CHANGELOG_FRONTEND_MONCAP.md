@@ -13,7 +13,8 @@ Il est structuré par thème :
 - 4) Workflow validation “Complément requis” (`complement`)
 - 5) Module “Militants” (stats / ventilation / recherche adhérent validé)
 - 6) Comptes militants + connexion “email + Carte PASTEF”
-- 7) Infos utiles (prefixes, auth, roles)
+- 7) Module Articles / Publications (couverture + pièces jointes max N + likes + commentaires)
+- 8) Infos utiles (prefixes, auth, roles)
 
 ---
 
@@ -318,9 +319,162 @@ Références backend :
 
 ---
 
-## 7) Infos utiles (prefixes, auth, rôles)
+## 7) Module Articles / Publications
 
-### 7.1 Préfixes / routes
+Un module complet “articles” est disponible sous le préfixe **`/api/v1/articles`**.
+Il sépare clairement les routes **publiques** (pas de JWT) et les routes **protégées** (JWT + rôle membre/coordinateur/admin).
+
+### 7.1 Configuration (`.env` à synchroniser au déploiement)
+Le nombre max de pièces jointes par article est **programmable via `.env`** (valeur backend lue au démarrage) :
+
+```dotenv
+ARTICLE_MAX_ATTACHMENTS=5
+ARTICLE_MAX_COVER_MB=8
+ARTICLE_MAX_ATTACHMENT_MB=20
+ARTICLE_ALLOWED_COVER_MIMES=image/jpeg,image/png,image/webp
+ARTICLE_ALLOWED_ATTACHMENT_MIMES=application/pdf,image/jpeg,image/png,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document
+```
+
+- Si tu dépasses `ARTICLE_MAX_ATTACHMENTS` → 400 `error.code="TOO_MANY_ATTACHMENTS"`
+- Mime invalide → 400 `INVALID_MIME`
+- Taille dépassée → 400 `FILE_TOO_LARGE`
+
+### 7.2 Modèle Article (schémas réponse)
+
+```ts
+interface ArticleAttachment {
+  id: string;
+  article_id: string;
+  file_url: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  order: number;
+  created_at: string;
+}
+
+interface ArticleOut {
+  id: string;
+  title: string;
+  summary: string | null;
+  body: string;
+  cover_url: string | null;
+  status: "draft" | "published";
+  commissariat: string | null;
+  tags: string[];
+  author_id: string;
+  author?: {
+    id: string;
+    email: string;
+    nom: string | null;
+    prenom: string | null;
+  } | null;
+  attachments: ArticleAttachment[];
+  view_count: number;
+  likes_count: number;
+  comments_count: number;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ArticleListResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  items: ArticleOut[];
+}
+```
+
+### 7.3 Endpoints PUBLICS (sans auth)
+
+- `GET /api/v1/articles` : liste paginée articles PUBLIÉS (status=published)`
+  - Query params : `page`, `page_size`, `q`, `commissariat`, `author_id`, `sort ∈ {latest,popular,oldest}`
+  - Réponse : `ArticleListResponse`
+
+- `GET /api/v1/articles/{article_id}` : détail article publié (+ incrémente view_count)
+  - Réponse : `ArticleOut`
+
+- `GET /api/v1/articles/{article_id}/comments` : commentaires paginés
+  - Query : `page`, `page_size`
+  - Réponse : `{ total, items: ArticleCommentOut[] }`
+
+```ts
+interface ArticleCommentOut {
+  id: string;
+  article_id: string;
+  author_id: string;
+  parent_id: string | null;
+  body: string;           // "[supprimé]" si deleted=true et pas l'auteur
+  deleted: boolean;
+  created_at: string;
+  updated_at: string;
+}
+```
+
+### 7.4 Endpoints PROTÉGÉS (Bearer JWT)
+Rôles autorisés : `militant` / `admin` / `comite_accueil` / `comite_directoire` / `coordinateur_commissariat` / `coordinateur_regional`.
+
+- `GET /api/v1/articles/mine : mes articles
+  - Query : `page`, `page_size`, `status ∈ {draft,published}`, `include_deleted=true/false`
+
+- `POST /api/v1/articles` — multipart/form-data — création article`
+
+| Champ Form | type | oblig. |
+|---|---|---|
+| title | string(3-255) | OUI |
+| body | string | OUI |
+| summary | string(0-500) | NON |
+| status | `"draft"` \| `"published"` | NON (défaut draft) |
+| commissariat | string | NON |
+| tags | string : JSON array ou CSV | NON |
+| cover | UploadFile | NON |
+| attachments | File[] | NON (max N) |
+
+- `PATCH /api/v1/articles/{article_id}` — multipart — modifier article (auteur seul OU admin)
+  - mêmes champs optionnels + `remove_attachment_ids` (JSON array ou CSV, UUIDs à supprimer)
+  - règle net-count : `(existants - remove_ids) + nouveaux <= ARTICLE_MAX_ATTACHMENTS`
+
+- `DELETE /api/v1/articles/{article_id}` — soft delete (auteur seul OU admin
+
+### 7.5 Likes
+
+- `POST /api/v1/articles/{article_id}/like` (toggle on)
+- `DELETE /api/v1/articles/{article_id}/like` (toggle off)
+- `GET /api/v1/articles/{article_id}/like/me` → statut like + total likes
+
+Tous retournent :
+```ts
+interface LikeResponse { liked: boolean; likes_count: number }
+```
+
+### 7.6 Commentaires (protégés)
+
+- `POST /api/v1/articles/{article_id}/comments` — JSON
+```ts
+{ body: string; parent_id?: string }
+```
+
+- `PATCH /api/v1/articles/comments/{comment_id}` — JSON `{ body }` — éditer (auteur/admin)
+- `DELETE /api/v1/articles/comments/{comment_id}` — soft delete (auteur/admin)
+
+### 7.7 Erreurs spécifiques articles — codes stables
+
+| HTTP | code | cause |
+|---|---|---|
+| 400 | `TOO_MANY_ATTACHMENTS` | > Nb max atteints |
+| 400 | `INVALID_MIME` | type MIME interdit |
+| 400 | `FILE_TOO_LARGE` | fichier trop gros |
+| 400 | `INVALID_STATUS` | status hors draft/published |
+| 400 | `INVALID_PARENT_COMMENT` | parent_id inexistant / mauvais article |
+| 403 | `FORBIDDEN` | pas auteur ni admin |
+| 404 | `NOT_FOUND` | article/commentaire introuvable |
+
+---
+
+## 8) Infos utiles (prefixes, auth, rôles)
+
+### 8.1 Préfixes / routes
 - Toutes nos routes sont préfixées : `/api/v1/...`
 - Auth : `/api/v1/auth/...`
 - Adhésions (public) : `/api/v1/adhesions`
@@ -329,11 +483,12 @@ Références backend :
 - Validation directoire : `/api/v1/directoire/adhesions/...`
 - Rejet (accueil + directoire) : `/api/v1/adhesions/{id}/rejeter` (protégé)
 - Militants : `/api/v1/militants/...`
+- Articles : `/api/v1/articles/...`
 - Geo : `/api/v1/geo/...`
 - Santé : `/api/v1/health/...`
 - Users (admin users) : `/api/v1/users/...`
 
-### 7.2 Rôles actuellement reconnus (backend)
+### 8.2 Rôles actuellement reconnus (backend)
 - `admin`
 - `comite_accueil`
 - `comite_directoire`
@@ -342,11 +497,11 @@ Références backend :
 - `coordinateur_regional` (enum présent, pas encore implémenté)
 - `user` (générique)
 
-### 7.3 Auth sur endpoints protégés
+### 8.3 Auth sur endpoints protégés
 - Header : `Authorization: Bearer <accessToken>`
 - Certains endpoints (admin, accueil, directoire, militants stats) nécessitent les rôles correspondants → sinon 403 avec `error.code="FORBIDDEN"`.
 
-### 7.4 OpenAPI / Docs
+### 8.4 OpenAPI / Docs
 Si l’API tourne en local, consulte :
 - `/docs` (Swagger UI)
 - `/redoc` (Redoc)
@@ -363,5 +518,7 @@ Cela liste tous les endpoints + schémas de body/response à jour.
 - [ ] Écrans stats militants : `/count`, `/stats/*`, `/timeseries`, `/hierarchy`.
 - [ ] Écran “carte membre” en suivi `/suivi` : utiliser `GET /militants/lookup?email=...` (ou autre critère).
 - [ ] Écran “espace membre” : login `email + carte pastef`, ensuite `GET /auth/me` pour afficher profil/photo/carte.
+- [ ] Module articles publiques : liste, détail, commentaires (GET public + like/comment connectés).
+- [ ] Module articles espaces membre : créer/éditer/supprimer article + uploads, likes, commentaires (réponses), `/articles/mine`.
 
 Fin du changelog.

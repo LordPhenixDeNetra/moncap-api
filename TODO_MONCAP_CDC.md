@@ -56,11 +56,15 @@ Source : [MONCAP_Cahier_des_Charges.md](file:///n:/OneDrive%20-%20Universit%C3%A
 - **Prérequis faits** :
   - [x] Comptes militants (création auto à la validation) + login `email + Carte PASTEF` : section “Comptes & rôles”.
   - [x] Rôle `militant` reconnu et JWT / auth / `/me` fonctionnels.
-- À faire :
-  - [ ] Modèles `Article`, `Comment`, `Like` + tags / commissariat / auteur
-  - [ ] Endpoints publics : liste, détail, commentaires (paginer)
-  - [ ] Endpoints militants connectés : créer/modifier (brouillon/publié), like, commenter
-  - [ ] Modération : admin/coordinateur (dépublier, supprimer commentaire)
+- **Implémentation faite** :
+  - [x] Modèles `Article`, `ArticleAttachment`, `ArticleLike`, `ArticleComment` + tags / commissariat / auteur + soft delete + compteurs : [models/article.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/models/article.py)
+  - [x] Endpoints **publics** : liste paginée, détail (+ increment views), commentaires paginés : [routes/articles.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/articles.py#L50-L100)
+  - [x] Endpoints **militants / connectés** : `/mine`, créer/modifier/supprimer (brouillon/publié), like/unlike, commenter/répondre, éditer/supprimer commentaire : [routes/articles.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/articles.py)
+  - [x] Upload multipart : **image de couverture** + **pièces jointes** (config `ARTICLE_MAX_ATTACHMENTS` via `.env`, défaut = 5), validation mime/taille, net count sur update (suppressions + ajouts)
+  - [x] Modération : rôle `admin` peut éditer / supprimer n’importe quel article ou commentaire (ownership author OR `is_admin`)
+- Reste à faire / à arbitrer :
+  - [ ] Publication directe vs validation par coordinateur (cf question §Blocants n°4)
+  - [ ] Scope “coordinateur de commissariat” : autoriser modération uniquement sur son commissariat
 
 ---
 
