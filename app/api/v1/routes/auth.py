@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from sqlalchemy.orm import selectinload
 
 from app.core.auth import Principal, get_principal
 from app.core.settings import get_settings
 from app.db.session import get_db
+from app.models.user import User
+from app.repositories.adhesions import AdhesionRepository
 from app.repositories.users import UserRepository
 from app.schemas.auth import LoginRequest, LoginResponse, MeResponse
 from app.services.auth import AuthService
@@ -91,14 +97,40 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
     description="Retourne les informations de l'utilisateur actuellement authentifié à partir de son Access Token.",
 )
 async def me(principal: Principal = Depends(get_principal), db: AsyncSession = Depends(get_db)):
-    user = await UserRepository(db).get_by_id(principal.user_id)
+    user_q = await db.execute(
+        select(User)
+        .options(selectinload(User.adhesion))
+        .where(User.id == principal.user_id)
+    )
+    user: User | None = user_q.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="Utilisateur introuvable")
+
+    militant = None
+    adhesion = getattr(user, "adhesion", None)
+    if adhesion is None and getattr(user, "adhesion_id", None) is not None:
+        adhesion = await AdhesionRepository(db).get_by_id(user.adhesion_id)  # type: ignore[arg-type]
+    if adhesion is not None:
+        militant = {
+            "adhesion_id": adhesion.id,
+            "nom": adhesion.nom,
+            "prenom": adhesion.prenom,
+            "cni": adhesion.cni,
+            "carte_pastef": adhesion.carte_pastef,
+            "commissariat": adhesion.commissariat,
+            "commissariat_scientifique_principal": adhesion.commissariat_scientifique_principal,
+            "commissariat_scientifique_secondaire": adhesion.commissariat_scientifique_secondaire,
+            "profile_photo_url": adhesion.profile_photo_url,
+            "photo_url": adhesion.photo_url,
+            "tel_mobile": adhesion.tel_mobile,
+        }
+
     return {
         "data": {
             "id": user.id,
             "email": user.email,
             "roles": principal.roles,
             "lastLoginAt": user.last_login_at,
+            "militant": militant,
         }
     }

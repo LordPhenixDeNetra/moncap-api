@@ -31,5 +31,8 @@ class AppRole(StrEnum):
     admin = "admin"
     comite_accueil = "comite_accueil"
     comite_directoire = "comite_directoire"
+    coordinateur_commissariat = "coordinateur_commissariat"
+    coordinateur_regional = "coordinateur_regional"
+    militant = "militant"
     user = "user"
 

@@ -103,6 +103,13 @@ class Adhesion(Base):
         "User", foreign_keys=[validation_directoire_user_id]
     )
 
+    user_account = relationship(
+        "User",
+        back_populates="adhesion",
+        foreign_keys="User.adhesion_id",
+        uselist=False,
+    )
+
     certification: Mapped[bool] = mapped_column(Boolean, server_default="0")
 
     idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)

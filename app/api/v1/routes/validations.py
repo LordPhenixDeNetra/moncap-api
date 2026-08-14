@@ -21,6 +21,7 @@ from app.schemas.adhesions import AdhesionDetailResponse
 from app.services.adhesion_mail_templates import build_adhesion_status_changed
 from app.services.adhesions import AdhesionService
 from app.services.mail import send_email_best_effort
+from app.services.members import MemberAccountService
 
 accueil_router = APIRouter(
     prefix="/accueil",
@@ -252,6 +253,8 @@ async def valider_adhesion_directoire(
     if rowcount == 0:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
 
+    created = await MemberAccountService(db).ensure_militant_account_for(adhesion_id=adhesion_id)
+
     await db.commit()
     after = await AdhesionRepository(db).get_by_id(adhesion_id)
     settings = get_settings()
@@ -259,6 +262,17 @@ async def valider_adhesion_directoire(
         subject, text, html = build_adhesion_status_changed(
             adhesion=after, old_status=before.statut, base_url=settings.public_base_url
         )
+        if not created.already_exists and created.temporary_password:
+            text += (
+                f"\n\nVotre compte membre est activé.\n"
+                f"Identifiant: {after.email}\n"
+                f"Mot de passe: {created.temporary_password}"
+            )
+            html += (
+                f"<p>Votre compte membre est activé.<br>"
+                f"Identifiant: {after.email}<br>"
+                f"Mot de passe: {created.temporary_password}</p>"
+            )
         background_tasks.add_task(
             send_email_best_effort,
             to=after.email,

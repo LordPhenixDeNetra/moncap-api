@@ -88,6 +88,30 @@ class AdhesionRepository:
         res = await self.session.execute(qy)
         return res.scalar_one_or_none()
 
+    async def get_validated_by_email(self, email: str) -> Adhesion | None:
+        qy = (
+            select(Adhesion)
+            .where(Adhesion.email == email)
+            .where(Adhesion.statut == AdhesionStatus.validee)
+            .where(Adhesion.deleted_at.is_(None))
+            .order_by(desc(Adhesion.created_at))
+            .limit(1)
+            .options(*self._with_geo())
+        )
+        res = await self.session.execute(qy)
+        return res.scalar_one_or_none()
+
+    async def get_by_id_for_update(self, adhesion_id: uuid.UUID) -> Adhesion | None:
+        qy = (
+            select(Adhesion)
+            .where(Adhesion.id == adhesion_id)
+            .where(Adhesion.deleted_at.is_(None))
+            .options(*self._with_geo())
+            .with_for_update()
+        )
+        res = await self.session.execute(qy)
+        return res.scalar_one_or_none()
+
     async def get_conflict_by_email(self, email: str) -> tuple[uuid.UUID, AdhesionStatus] | None:
         qy = (
             select(Adhesion.id, Adhesion.statut)
