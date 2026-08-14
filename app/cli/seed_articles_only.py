@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,7 +18,6 @@ from app.models.adhesion import Adhesion
 from app.models.article import Article, ArticleComment, ArticleLike
 from app.models.enums import AdhesionStatus
 from app.models.user import User
-from app.services.members import MemberAccountService, MilitantAccountCreated
 
 
 if sys.stdout.encoding.lower().replace("-", "") not in ("utf8", "utf_8", "utf8mb4"):
@@ -46,6 +45,19 @@ SAMPLE_TITLES = [
     "Débat démocratique : place aux idées, pas aux égos",
     "Militantisme de terrain : les bonnes pratiques",
     "Annonce : journée citoyenne ce samedi",
+    "Éducation civique : former les citoyens de demain",
+    "Santé pour tous : un droit, pas un privilège",
+    "Agriculture et souveraineté alimentaire au Sénégal",
+    "Numérique et inclusion : ne laisser personne de côté",
+    "Jeunes filles et études : levons les obstacles",
+    "Transports et infrastructure : les attentes des citoyens",
+    "Retour sur la dernière caravane citoyenne",
+    "Petit guide pour organiser une réunion de quartier",
+    "Pourquoi il faut parler du budget participatif",
+    "Les collectivités territoriales : un espace de pouvoir citoyen",
+    "Femmes engagées : faire entendre leur voix",
+    "Culture et identité : des atouts pour le Sénégal",
+    "Entreprenariat jeune : soutenir les initiatives locales",
 ]
 
 
@@ -75,6 +87,9 @@ INTRO_OPTIONS = [
     "Lors de la dernière réunion de commissariat, plusieurs idées sont ressorties. Je tenais à les mettre par écrit pour nourrir notre réflexion collective.",
     "La diaspora a un rôle central à jouer. Voici comment nous pouvons nous organiser pour peser de tout notre poids.",
     "La mobilisation commence par l’écoute. J’ai rencontré plusieurs dizaines de familles ces semaines-ci. Voici ce qui ressort de mes échanges.",
+    "Notre commissariat scientifique vient de publier ses propositions. Je vous propose ici un résumé accessible à toutes et tous.",
+    "L’année qui s’ouvre sera décisive. Dès maintenant, préparons-nous sur le terrain pour gagner.",
+    "Trop de citoyens se sentent abandonnés. Nous avons le devoir d’être présents, d’écouter et de proposer des réponses claires.",
 ]
 
 CONCLUSION_OPTIONS = [
@@ -83,10 +98,9 @@ CONCLUSION_OPTIONS = [
     "Chaque petit geste compte. Continuons d’avancer main dans la main, avec patience et détermination.",
     "Ensemble, faisons entendre la voix des citoyens, de Dakar à Tambacounda, de Paris à New York.",
     "La route est longue, mais la direction est la bonne. Soyons nombreux, soyons déterminés, soyons solidaires.",
+    "Citoyen après citoyen, famille après famille, nous bâtissons le Sénégal de demain. Ne lâchons rien.",
+    "Ce ne sont pas les grands discours qui changeront les choses, mais notre présence et notre organisation. À l’œuvre !",
 ]
-
-
-LIKE_COMMENT_AUTHOR_USERS_CACHE: list[User] = []
 
 
 SAMPLE_COMMENT_OPENERS = [
@@ -129,100 +143,6 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _build_body(adhesion: Adhesion) -> str:
-    diaspora_clause = "(diaspora)" if adhesion.est_diaspora else ""
-    return SAMPLE_BODY_TEMPLATE.format(
-        nom=adhesion.nom,
-        prenom=adhesion.prenom,
-        commissariat=adhesion.commissariat or "Commissariat général",
-        diaspora_clause=diaspora_clause,
-        intro=random.choice(INTRO_OPTIONS),
-        conclusion=random.choice(CONCLUSION_OPTIONS),
-    )
-
-
-def _build_summary(body: str) -> str:
-    clean = body.replace("\n", " ")
-    if len(clean) <= 250:
-        return clean
-    return clean[:247] + "..."
-
-
-def _tags_for(adhesion: Adhesion) -> list[str]:
-    tags: list[str] = []
-    tags.append(adhesion.commissariat or "general")
-    if adhesion.est_diaspora:
-        tags.append("diaspora")
-    if adhesion.niveau_etude:
-        tags.append(adhesion.niveau_etude)
-    tags.append("engagement")
-    if adhesion.commissariat_scientifique_principal:
-        tags.append(adhesion.commissariat_scientifique_principal)
-    return [t for t in list(dict.fromkeys(tags)) if t][:6]
-
-
-def _build_article(adhesion: Adhesion, user_id, status: str, order: int) -> Article:
-    title = f"{random.choice(SAMPLE_TITLES)} · #{order}"
-    body = _build_body(adhesion)
-    summary = _build_summary(body)
-    tags = json.dumps(_tags_for(adhesion), ensure_ascii=False)
-    article = Article(
-        title=title,
-        summary=summary,
-        body=body,
-        cover_url=None,
-        status=status,
-        commissariat=adhesion.commissariat,
-        tags=tags,
-        author_id=user_id,
-        view_count=random.randint(3, 120),
-        likes_count=0,
-        comments_count=0,
-        published_at=now_utc() if status == "published" else None,
-        deleted_at=None,
-    )
-    return article
-
-
-async def _list_validated_adhesions_without_account(
-    session: AsyncSession,
-    *,
-    limit: int | None,
-) -> list[Adhesion]:
-    status_value = AdhesionStatus.validee.value if hasattr(AdhesionStatus.validee, "value") else AdhesionStatus.validee
-    no_account = ~exists(1).where(User.adhesion_id == Adhesion.id)
-    qy = (
-        select(Adhesion)
-        .where(
-            and_(
-                Adhesion.statut == status_value,
-                Adhesion.deleted_at.is_(None),
-                no_account,
-            )
-        )
-        .options(selectinload(Adhesion.user_account))
-        .order_by(Adhesion.created_at.asc())
-    )
-    if limit:
-        qy = qy.limit(limit)
-    res = await session.execute(qy)
-    return list(res.scalars().unique().all())
-
-
-async def _count_author_articles(session: AsyncSession, user_ids: Iterable) -> dict:
-    ids = list(user_ids)
-    if not ids:
-        return {}
-    qy = (
-        select(Article.author_id, func.count(Article.id).label("cnt"))
-        .where(Article.author_id.in_(ids))
-        .where(Article.deleted_at.is_(None))
-        .group_by(Article.author_id)
-    )
-    res = await session.execute(qy)
-    return {row.author_id: int(row.cnt) for row in res.all()}
-
-
 def _parse_range(s: str) -> tuple[int, int]:
     if s is None:
         raise ValueError("range is None")
@@ -245,18 +165,98 @@ async def _list_active_users(session: AsyncSession) -> list[User]:
     return list(res.scalars().unique().all())
 
 
-async def _list_all_articles(session: AsyncSession) -> list[Article]:
+async def _load_users_with_adhesions(session: AsyncSession, user_ids: Iterable) -> list[User]:
+    ids = list(user_ids)
+    if not ids:
+        return []
     qy = (
-        select(Article)
-        .where(Article.deleted_at.is_(None))
-        .options(
-            selectinload(Article.likes),
-            selectinload(Article.comments),
-        )
-        .order_by(Article.created_at.asc())
+        select(User)
+        .where(User.id.in_(ids))
+        .options(selectinload(User.adhesion))
+        .order_by(User.created_at.asc())
     )
     res = await session.execute(qy)
     return list(res.scalars().unique().all())
+
+
+async def _count_author_articles(session: AsyncSession, user_ids: Iterable) -> dict:
+    ids = list(user_ids)
+    if not ids:
+        return {}
+    qy = (
+        select(Article.author_id, func.count(Article.id).label("cnt"))
+        .where(Article.author_id.in_(ids))
+        .where(Article.deleted_at.is_(None))
+        .group_by(Article.author_id)
+    )
+    res = await session.execute(qy)
+    return {row.author_id: int(row.cnt) for row in res.all()}
+
+
+def _build_body(adhesion: Adhesion | None, user: User) -> str:
+    commissariat = ""
+    est_diaspora = False
+    niveau_etude = None
+    if adhesion is not None:
+        commissariat = adhesion.commissariat or ""
+        est_diaspora = bool(adhesion.est_diaspora)
+        niveau_etude = adhesion.niveau_etude
+    if not commissariat:
+        commissariat = "Commissariat général"
+    diaspora_clause = "(diaspora)" if est_diaspora else ""
+    return SAMPLE_BODY_TEMPLATE.format(
+        nom=user.nom,
+        prenom=user.prenom,
+        commissariat=commissariat,
+        diaspora_clause=diaspora_clause,
+        intro=random.choice(INTRO_OPTIONS),
+        conclusion=random.choice(CONCLUSION_OPTIONS),
+    )
+
+
+def _build_summary(body: str) -> str:
+    clean = body.replace("\n", " ")
+    if len(clean) <= 250:
+        return clean
+    return clean[:247] + "..."
+
+
+def _tags_for(adhesion: Adhesion | None) -> list[str]:
+    tags: list[str] = []
+    if adhesion is not None:
+        tags.append(adhesion.commissariat or "general")
+        if adhesion.est_diaspora:
+            tags.append("diaspora")
+        if adhesion.niveau_etude:
+            tags.append(adhesion.niveau_etude)
+        if adhesion.commissariat_scientifique_principal:
+            tags.append(adhesion.commissariat_scientifique_principal)
+    tags.append("engagement")
+    if not tags:
+        tags = ["general", "engagement"]
+    return [t for t in list(dict.fromkeys(tags)) if t][:6]
+
+
+def _build_article(user: User, adhesion: Adhesion | None, status: str, order: int) -> Article:
+    title = f"{random.choice(SAMPLE_TITLES)} · #{order}"
+    body = _build_body(adhesion, user)
+    summary = _build_summary(body)
+    tags = json.dumps(_tags_for(adhesion), ensure_ascii=False)
+    return Article(
+        title=title,
+        summary=summary,
+        body=body,
+        cover_url=None,
+        status=status,
+        commissariat=adhesion.commissariat if adhesion is not None else None,
+        tags=tags,
+        author_id=user.id,
+        view_count=random.randint(5, 200),
+        likes_count=0,
+        comments_count=0,
+        published_at=now_utc() if status == "published" else None,
+        deleted_at=None,
+    )
 
 
 def _generate_comment_body() -> str:
@@ -271,18 +271,16 @@ def _generate_reply_body() -> str:
     return f"{random.choice(SAMPLE_REPLY_OPENERS)} {random.choice(SAMPLE_COMMENT_BODIES)}"
 
 
-async def _seed_likes_and_comments_for_articles(
+async def _seed_likes_and_comments(
     session: AsyncSession,
     articles: list[Article],
+    users: list[User],
     *,
     likes_range: tuple[int, int],
     comments_range: tuple[int, int],
     replies_range: tuple[int, int],
-    dry_run: bool,
 ) -> tuple[int, int, int]:
-    users = await _list_active_users(session)
     if not users:
-        print("  [likes/comments] Aucun utilisateur actif dans la base, skip.")
         return 0, 0, 0
 
     likes_added = 0
@@ -290,7 +288,7 @@ async def _seed_likes_and_comments_for_articles(
     replies_added = 0
 
     for article in articles:
-        existing_like_user_ids = {like.user_id for like in article.likes if like is not None}
+        existing_like_user_ids = {like.user_id for like in article.likes or [] if like is not None}
         possible_likers = [u for u in users if u.id != article.author_id and u.id not in existing_like_user_ids]
         target_likes = random.randint(likes_range[0], likes_range[1])
         if possible_likers and target_likes > 0:
@@ -302,14 +300,16 @@ async def _seed_likes_and_comments_for_articles(
                 likes_added += 1
             article.likes_count = int(article.likes_count or 0) + pick_count
 
-        existing_comments = [c for c in article.comments if c is not None and c.deleted_at is None and c.parent_id is None]
+        existing_comments_n1 = [
+            c for c in article.comments or []
+            if c is not None and getattr(c, "deleted_at", None) is None and c.parent_id is None
+        ]
         target_comments = random.randint(comments_range[0], comments_range[1])
-        possible_commenters = [u for u in users]
-        target_comments = max(0, target_comments - len(existing_comments))
+        target_comments = max(0, target_comments - len(existing_comments_n1))
         new_comments_for_article: list[ArticleComment] = []
-        if possible_commenters and target_comments > 0:
+        if target_comments > 0:
             for _ in range(target_comments):
-                author = random.choice(possible_commenters)
+                author = random.choice(users)
                 comment = ArticleComment(
                     article_id=article.id,
                     author_id=author.id,
@@ -342,57 +342,75 @@ async def _seed_likes_and_comments_for_articles(
                     replies_added += 1
                     article.comments_count = int(article.comments_count or 0) + 1
 
-    if dry_run:
-        return likes_added, comments_added, replies_added
     return likes_added, comments_added, replies_added
 
 
-async def seed_militants_and_articles(
+async def _list_all_articles(session: AsyncSession) -> list[Article]:
+    qy = (
+        select(Article)
+        .where(Article.deleted_at.is_(None))
+        .options(
+            selectinload(Article.likes),
+            selectinload(Article.comments),
+        )
+        .order_by(Article.created_at.asc())
+    )
+    res = await session.execute(qy)
+    return list(res.scalars().unique().all())
+
+
+async def seed_articles_only(
     *,
-    limit_militants: int | None,
-    articles_per_militant: int,
-    force_status: str,
+    articles_range_per_user: tuple[int, int],
+    likes_range: tuple[int, int],
+    comments_range: tuple[int, int],
+    replies_range: tuple[int, int],
     dry_run: bool,
-    seed_existing_articles: bool,
-    likes_min: int,
-    likes_max: int,
-    comments_min: int,
-    comments_max: int,
-    replies_min: int,
-    replies_max: int,
+    status: str,
+    engage_existing: bool,
 ):
     session_factory = get_sessionmaker()
     async with session_factory() as session:
-        adhesions = await _list_validated_adhesions_without_account(session, limit=limit_militants)
-        print(f"Adhésions validées SANS compte militant : {len(adhesions)}")
+        all_users = await _list_active_users(session)
+        print(f"Utilisateurs en base : {len(all_users)}")
+        if not all_users:
+            print("[ERREUR] Aucun utilisateur pour creer des articles.")
+            return
 
-        created: list[tuple[MilitantAccountCreated, Adhesion]] = []
-        articles_created = 0
+        user_ids = [u.id for u in all_users]
+        existing_counts = await _count_author_articles(session, user_ids)
+        users_with_adhesions = await _load_users_with_adhesions(session, user_ids)
+        user_by_id = {u.id: u for u in users_with_adhesions}
+
         new_articles: list[Article] = []
+        articles_created = 0
 
-        if not dry_run:
-            svc = MemberAccountService(session)
+        if dry_run:
+            for u in all_users:
+                lo, hi = articles_range_per_user
+                target = random.randint(lo, hi)
+                adhesion_summary = "sans adhesion"
+                uh = user_by_id.get(u.id)
+                if uh is not None and uh.adhesion is not None:
+                    adhesion_summary = f"adhesion={uh.adhesion.commissariat or 'general'}"
+                print(f"  -> {u.nom} {u.prenom} <{u.email}> [{adhesion_summary}] : {target} articles a creer")
+            articles_created = sum(
+                random.randint(articles_range_per_user[0], articles_range_per_user[1])
+                for _ in all_users
+            )
+        else:
             try:
-                for a in adhesions:
-                    res = await svc.ensure_militant_account_for(adhesion_id=a.id)
-                    if not res.already_exists:
-                        created.append((res, a))
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
-
-            new_user_ids = [r.user_id for r, _ in created]
-            existing_counts = await _count_author_articles(session, new_user_ids)
-
-            try:
-                for (res, adhesion), user_id in zip(created, new_user_ids):
-                    existing = existing_counts.get(user_id, 0)
-                    for i in range(articles_per_militant):
+                for u in all_users:
+                    lo, hi = articles_range_per_user
+                    target = random.randint(lo, hi)
+                    existing = existing_counts.get(u.id, 0)
+                    uh = user_by_id.get(u.id)
+                    adhesion = uh.adhesion if uh is not None else None
+                    for i in range(target):
                         article = _build_article(
-                            adhesion,
-                            user_id=user_id,
-                            status=force_status,
+                            u,
+                            adhesion=adhesion,
+                            status=status,
                             order=existing + i + 1,
                         )
                         session.add(article)
@@ -405,43 +423,34 @@ async def seed_militants_and_articles(
                 await session.rollback()
                 raise
 
-        if dry_run:
-            for a in adhesions:
-                print(f"  -> creer compte pour {a.nom} {a.prenom} <{a.email}> (statut={a.statut})")
-            print(
-                f"[DRY-RUN] {len(adhesions)} comptes a creer, {articles_per_militant} articles/militant, "
-                f"likes=[{likes_min},{likes_max}] comments=[{comments_min},{comments_max}] replies=[{replies_min},{replies_max}], "
-                f"seed_existing_articles={seed_existing_articles}"
-            )
-            nb_new = len(adhesions)
-            articles_created = nb_new * articles_per_militant
-        else:
-            nb_new = len(created)
-
         articles_to_engage: list[Article] = []
         if dry_run:
-            all_articles_preview = articles_created
-            if seed_existing_articles:
-                all_articles_count_q = await session.execute(
-                    select(func.count(Article.id)).where(Article.deleted_at.is_(None))
-                )
-                total_articles_db = int(all_articles_count_q.scalar_one() or 0)
-                all_articles_preview = max(total_articles_db, articles_created)
-            print(f"[DRY-RUN] Articles a peupler en likes/comments : ~{all_articles_preview}")
+            preview_total_q = await session.execute(
+                select(func.count(Article.id)).where(Article.deleted_at.is_(None))
+            )
+            preview_total = int(preview_total_q.scalar_one() or 0)
+            if engage_existing:
+                preview_total = max(preview_total, preview_total + articles_created)
+            else:
+                preview_total = articles_created
+            print(
+                f"[DRY-RUN] Articles a creer : {articles_created} | "
+                f"Articles a peupler en likes/comments : ~{preview_total}"
+            )
         else:
-            if seed_existing_articles:
+            if engage_existing:
                 articles_to_engage = await _list_all_articles(session)
             else:
                 articles_to_engage = new_articles
 
             try:
-                likes_added, comments_added, replies_added = await _seed_likes_and_comments_for_articles(
+                likes_added, comments_added, replies_added = await _seed_likes_and_comments(
                     session,
                     articles_to_engage,
-                    likes_range=(likes_min, likes_max),
-                    comments_range=(comments_min, comments_max),
-                    replies_range=(replies_min, replies_max),
-                    dry_run=False,
+                    all_users,
+                    likes_range=likes_range,
+                    comments_range=comments_range,
+                    replies_range=replies_range,
                 )
                 await session.commit()
             except Exception:
@@ -449,72 +458,64 @@ async def seed_militants_and_articles(
                 raise
 
         if not dry_run:
-            print(f"Comptes crees : {nb_new}")
             print(f"Articles crees : {articles_created}")
-            if seed_existing_articles or new_articles:
-                print(
-                    f"Likes ajoutes : {likes_added} | Commentaires ajoutes : {comments_added} "
-                    f"(dont {replies_added} reponses)"
-                )
+            print(
+                f"Likes ajoutes : {likes_added} | Commentaires ajoutes : {comments_added} "
+                f"(dont {replies_added} reponses)"
+            )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Seed des comptes militants (adhesions validees) + articles + likes + commentaires de demonstration.",
+        description="Seed de contenu articles+likes+commentaires pour les utilisateurs existants.",
     )
     parser.add_argument(
-        "--limit-militants",
-        type=int,
-        default=None,
-        help="Nombre max d'adhesions validees a transformer en comptes (defaut : toutes).",
-    )
-    parser.add_argument(
-        "--articles-per-militant",
-        type=int,
-        default=1,
-        help="Nombre d'articles de demo a creer par compte militant (defaut 1).",
-    )
-    parser.add_argument(
-        "--article-status",
+        "--articles-per-user",
         type=str,
-        default="published",
-        choices=["draft", "published"],
-        help="Statut des articles de demo (defaut published).",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Afficher les actions sans rien modifier en base.",
+        default="8,12",
+        help="Nombre d'articles a creer par utilisateur, sous la forme 'min,max' (defaut 8,12).",
     )
     parser.add_argument(
         "--likes-per-article",
         type=str,
-        default="3,12",
-        help="Nombre de likes par article, sous la forme 'min,max' (defaut 3,12).",
+        default="4,18",
+        help="Nombre de likes/article : 'min,max' (defaut 4,18).",
     )
     parser.add_argument(
         "--comments-per-article",
         type=str,
-        default="1,5",
-        help="Nombre de commentaires (niveau 1) par article, sous la forme 'min,max' (defaut 1,5).",
+        default="2,8",
+        help="Nombre de commentaires/article (niveau 1) : 'min,max' (defaut 2,8).",
     )
     parser.add_argument(
         "--replies-per-comment",
         type=str,
-        default="0,2",
-        help="Nombre de reponses par commentaire, sous la forme 'min,max' (defaut 0,2).",
+        default="0,3",
+        help="Nombre de reponses/commentaire : 'min,max' (defaut 0,3).",
     )
     parser.add_argument(
-        "--seed-existing-articles",
+        "--status",
+        type=str,
+        choices=["draft", "published"],
+        default="published",
+        help="Statut des articles crees (defaut published).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Ne rien modifier, afficher seulement les actions prevues.",
+    )
+    parser.add_argument(
+        "--engage-existing",
         action="store_true",
         default=True,
-        help="Ajouter des likes/comments aussi sur les articles deja presents en base (defaut : true).",
+        help="Ajouter likes/comments aussi sur les articles existants (defaut true).",
     )
     parser.add_argument(
-        "--no-seed-existing-articles",
-        dest="seed_existing_articles",
+        "--no-engage-existing",
+        dest="engage_existing",
         action="store_false",
-        help="Ne pas ajouter de likes/comments sur les articles existants (seulement ceux nouvellement crees).",
+        help="Ajouter likes/comments seulement sur les articles nouvellement crees.",
     )
     args = parser.parse_args()
 
@@ -527,26 +528,23 @@ def main() -> None:
             pass
 
     try:
-        likes_range = _parse_range(args.likes_per_article)
-        comments_range = _parse_range(args.comments_per_article)
-        replies_range = _parse_range(args.replies_per_comment)
+        a_range = _parse_range(args.articles_per_user)
+        l_range = _parse_range(args.likes_per_article)
+        c_range = _parse_range(args.comments_per_article)
+        r_range = _parse_range(args.replies_per_comment)
     except ValueError as e:
         print(f"[ERREUR] Range invalide : {e}")
         sys.exit(2)
 
     asyncio.run(
-        seed_militants_and_articles(
-            limit_militants=args.limit_militants,
-            articles_per_militant=args.articles_per_militant,
-            force_status=args.article_status,
+        seed_articles_only(
+            articles_range_per_user=a_range,
+            likes_range=l_range,
+            comments_range=c_range,
+            replies_range=r_range,
             dry_run=args.dry_run,
-            seed_existing_articles=args.seed_existing_articles,
-            likes_min=likes_range[0],
-            likes_max=likes_range[1],
-            comments_min=comments_range[0],
-            comments_max=comments_range[1],
-            replies_min=replies_range[0],
-            replies_max=replies_range[1],
+            status=args.status,
+            engage_existing=args.engage_existing,
         )
     )
 
