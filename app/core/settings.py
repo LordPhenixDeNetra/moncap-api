@@ -2,15 +2,78 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import AnyUrl, Field
 from pydantic import field_validator
+from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
+
+
+def _csv_to_list(raw: str) -> list[str]:
+    s = raw.strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        try:
+            import json
+
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+    return [x.strip() for x in s.split(",") if x.strip()]
+
+
+def _is_list_field(field: FieldInfo) -> bool:
+    annotation = field.annotation
+    if annotation in (list, list[str], list[AnyUrl]):
+        return True
+    origin = getattr(annotation, "__origin__", None)
+    if origin is list:
+        return True
+    return False
+
+
+def _patched_prepare(base_cls):
+    original = base_cls.prepare_field_value
+
+    def prepare_field_value(self, field_name: str, field: FieldInfo, value: Any, value_is_complex: bool):
+        if isinstance(value, str) and _is_list_field(field):
+            return _csv_to_list(value)
+        return original(self, field_name, field, value, value_is_complex=False)
+
+    base_cls.prepare_field_value = prepare_field_value
+    return base_cls
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=str(Path(__file__).resolve().parents[2] / ".env"), extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parents[2] / ".env"),
+        extra="ignore",
+        env_parse_none_str="None",
+        parse_env_inf_float=False,
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        env_settings.__class__ = _patched_prepare(EnvSettingsSource)
+        dotenv_settings.__class__ = _patched_prepare(DotEnvSettingsSource)
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     env: Literal["development", "test", "production"] = "development"
     api_title: str = "MONCAP API"
@@ -55,11 +118,33 @@ class Settings(BaseSettings):
             "image/png",
             "application/msword",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ]
+        ],
     )
     article_allowed_cover_mimes: list[str] = Field(
-        default_factory=lambda: ["image/jpeg", "image/png", "image/webp"]
+        default_factory=lambda: [
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+        ],
     )
+
+    @field_validator("cors_allow_origins", mode="after")
+    @classmethod
+    def _normalize_cors_origins(cls, v):
+        if v is None:
+            return []
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    @field_validator(
+        "article_allowed_attachment_mimes",
+        "article_allowed_cover_mimes",
+        mode="after",
+    )
+    @classmethod
+    def _normalize_mimes(cls, v):
+        if v is None:
+            return []
+        return [str(x).strip().lower() for x in v if str(x).strip()]
 
     @field_validator("database_url")
     @classmethod
