@@ -209,7 +209,15 @@ def build_adhesion_validee_welcome(
         ]
         if pwd_value:
             text_lines.append(f"  • Mot de passe initial : {pwd_value}")
-            text_lines.append(f"    (il correspond à {pwd_label})")
+            if pwd_label.startswith("votre numéro"):
+                text_lines.append(
+                    f"    (Important : il s'agit de VOTRE MOT DE PASSE — il correspond à {pwd_label}, fourni lors de votre adhésion."
+                )
+                text_lines.append(
+                    "    Ce n'est PAS un identifiant de connexion : utilisez bien votre email ci-dessus pour vous logger."
+                )
+            else:
+                text_lines.append(f"    (il correspond à {pwd_label})")
         text_lines += [
             "",
             "IMPORTANT : pour votre sécurité, changez ce mot de passe dès votre 1ère connexion,",
@@ -238,14 +246,26 @@ def build_adhesion_validee_welcome(
     # ---- HTML ----
     pwd_info_html = ""
     if account_created:
+        pwd_clarification_html = ""
+        if pwd_value and pwd_label.startswith("votre numéro"):
+            pwd_clarification_html = f"""
+            <p style="margin:4px 0;color:#1f618d;">
+              <strong>Important :</strong>
+              La valeur ci-dessus est <em>votre MOT DE PASSE</em>
+              (elle correspond à {escape(pwd_label)}, que vous avez fournie lors de votre adhésion).
+              <br>Ce n'est <strong>PAS un identifiant de connexion</strong> :
+              pour vous connecter, utilisez obligatoirement votre adresse email listée ci-dessus.
+            </p>
+            """
         pwd_info_html = f"""
         <div style="background:#f1f2f6;padding:16px;border-left:4px solid #222;margin:16px 0;">
           <p style="margin:0 0 8px 0;"><strong>{escape(account_title)}</strong></p>
           <p style="margin:4px 0;">Pour vous connecter à l'espace membre :</p>
           <ul>
             <li><strong>Identifiant (login) :</strong> {escape(adhesion.email)}</li>
-            {f'<li><strong>Mot de passe initial :</strong> <code style="background:#fff;padding:2px 6px;border-radius:4px;">{escape(pwd_value)}</code><br><em>(il correspond à {escape(pwd_label)}</li>' if pwd_value else ''}
+            {f'<li><strong>Mot de passe initial :</strong> <code style="background:#fff;padding:2px 6px;border-radius:4px;">{escape(pwd_value)}</code></li>' if pwd_value else ''}
           </ul>
+          {pwd_clarification_html}
           <p style="color:#c0392b;margin:8px 0 0 0;"><strong>IMPORTANT</strong> : pour votre sécurité, changez ce mot de passe dès votre 1ère connexion, depuis la section profil / mot de passe de l'application.</p>
         </div>
         """
