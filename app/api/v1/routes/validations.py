@@ -18,7 +18,10 @@ from app.schemas.admin import (
     AdminUpdateAdhesionResponse,
 )
 from app.schemas.adhesions import AdhesionDetailResponse
-from app.services.adhesion_mail_templates import build_adhesion_status_changed
+from app.services.adhesion_mail_templates import (
+    build_adhesion_status_changed,
+    build_adhesion_validee_welcome,
+)
 from app.services.adhesions import AdhesionService
 from app.services.mail import send_email_best_effort
 from app.services.members import MemberAccountService
@@ -259,20 +262,13 @@ async def valider_adhesion_directoire(
     after = await AdhesionRepository(db).get_by_id(adhesion_id)
     settings = get_settings()
     if settings.mail_enabled and after and after.email:
-        subject, text, html = build_adhesion_status_changed(
-            adhesion=after, old_status=before.statut, base_url=settings.public_base_url
+        subject, text, html = build_adhesion_validee_welcome(
+            adhesion=after,
+            old_status=before.statut,
+            base_url=settings.public_base_url,
+            account_created=(not created.already_exists),
+            temporary_password=created.temporary_password,
         )
-        if not created.already_exists and created.temporary_password:
-            text += (
-                f"\n\nVotre compte membre est activé.\n"
-                f"Identifiant: {after.email}\n"
-                f"Mot de passe: {created.temporary_password}"
-            )
-            html += (
-                f"<p>Votre compte membre est activé.<br>"
-                f"Identifiant: {after.email}<br>"
-                f"Mot de passe: {created.temporary_password}</p>"
-            )
         background_tasks.add_task(
             send_email_best_effort,
             to=after.email,

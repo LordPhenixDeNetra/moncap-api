@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import AnyUrl, Field
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
@@ -128,6 +128,12 @@ class Settings(BaseSettings):
             "image/webp",
         ],
     )
+
+    @model_validator(mode="after")
+    def _apply_derived_defaults(self) -> "Settings":
+        if self.public_base_url is None and self.api_base_url:
+            object.__setattr__(self, "public_base_url", self.api_base_url)
+        return self
 
     @field_validator("cors_allow_origins", mode="after")
     @classmethod
