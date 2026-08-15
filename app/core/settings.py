@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     storage_dir: str = "storage"
     public_files_path: str = "/files"
     public_base_url: str | None = None
+    api_base_url: str | None = None
 
     mail_enabled: bool = False
     smtp_host: str | None = None

@@ -4,7 +4,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+
+from app.core.urls import to_absolute_public_url
 
 
 class ArticleAttachmentOut(BaseModel):
@@ -18,6 +20,10 @@ class ArticleAttachmentOut(BaseModel):
     size_bytes: int
     order: int
     created_at: datetime
+
+    @field_serializer("file_url")
+    def _abs_file_url(self, v: str | None) -> str | None:
+        return to_absolute_public_url(v)
 
 
 class ArticleAuthorOut(BaseModel):
@@ -48,6 +54,11 @@ class ArticleOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     attachments: list[ArticleAttachmentOut] = Field(default_factory=list)
+    score: float | None = Field(default=None, description="Score de pertinence (si recherche/q). Remplit seulement avec q.")
+
+    @field_serializer("cover_url")
+    def _abs_cover_url(self, v: str | None) -> str | None:
+        return to_absolute_public_url(v)
 
     @field_validator("tags", mode="before")
     @classmethod

@@ -3,7 +3,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_serializer
+
+from app.core.urls import to_absolute_public_url
 
 
 class LoginRequest(BaseModel):
@@ -30,6 +32,10 @@ class MilitantProfileLink(BaseModel):
     profile_photo_url: str | None = None
     photo_url: str | None = None
     tel_mobile: str | None = None
+
+    @field_serializer("profile_photo_url", "photo_url")
+    def _abs_urls(self, v: str | None) -> str | None:
+        return to_absolute_public_url(v)
 
 
 class MeData(BaseModel):

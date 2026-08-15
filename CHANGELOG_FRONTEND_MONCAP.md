@@ -1,6 +1,6 @@
 # Changelog Backend MONCAP — à destination du développeur Frontend
 
-> Date : 2026-08-14
+> Date : 2026-08-15 (dernière mise à jour)
 > Projet : `moncap-api` (FastAPI + PostgreSQL)
 > Base URL API : `http://localhost:<port>/api/v1` (adapter selon environnement)
 
@@ -13,8 +13,18 @@ Il est structuré par thème :
 - 4) Workflow validation “Complément requis” (`complement`)
 - 5) Module “Militants” (stats / ventilation / recherche adhérent validé)
 - 6) Comptes militants + connexion “email + Carte PASTEF”
-- 7) Module Articles / Publications (couverture + pièces jointes max N + likes + commentaires)
-- 8) Infos utiles (prefixes, auth, roles)
+- 7) Module Articles / Publications
+  - 7.1 Configuration uploads (max N pièces, tailles, MIMES)
+  - 7.2 Schéma réponse `ArticleOut`
+  - 7.3 Liste articles PUBLICS — **ENDPOINT RECHERCHE PUISSANT (à jour 2026-08-15)**
+  - 7.4 Détail / commentaires (publics)
+  - 7.5 Espaces membre : créer / éditer / supprimer / mes articles
+  - 7.6 Likes
+  - 7.7 Commentaires
+  - 7.8 Erreurs spécifiques
+- 8) Infos utiles (prefixes, auth, rôles)
+- 9) Données de démo (seed articles + médias Unsplash)
+- 10) Checklist rapide (frontend)
 
 ---
 
@@ -376,6 +386,13 @@ interface ArticleOut {
   published_at: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Score de pertinence (float).
+   * - Renseigné SEULEMENT si `q` est fourni dans la requête.
+   * - Pondérations : title ×10, tags ×8, summary ×5, body ×1.
+   * - Les articles sont TRIÉS par score DESC (puis date DESC) quand `sort=auto` (défaut) ou `sort=relevance`.
+   */
+  score: number | null;
 }
 
 interface ArticleListResponse {
@@ -386,15 +403,68 @@ interface ArticleListResponse {
 }
 ```
 
-### 7.3 Endpoints PUBLICS (sans auth)
+### 7.3 Liste articles PUBLICS — **ENDPOINT RECHERCHE PUISSANT (2026-08-15)**
 
-- `GET /api/v1/articles` : liste paginée articles PUBLIÉS (status=published)`
-  - Query params : `page`, `page_size`, `q`, `commissariat`, `author_id`, `sort ∈ {latest,popular,oldest}`
-  - Réponse : `ArticleListResponse`
+- `GET /api/v1/articles` : liste paginée articles PUBLIÉS (status=published).
+  - **Recherche plein texte intelligente** (pas besoin d'être militant) :
+    - `q` : mots-clés (ex: `"militant santé"`).
+      - Tokenisation automatique (mots ≥ 2 lettres, normalisés lowercase, accent pas sensible via ILIKE).
+      - `q_mode=auto` (**défaut**) : **ET** entre mots d'abord, mais **fallback automatique en OU si 0 résultat** (jamais d'écran vide).
+      - Autres `q_mode` : `and` (strict) / `or` (large).
+      - **Tri par pertinence** **automatique** si `q` est renseigné :
+        - Pondérations SQL + Python cohérentes : titre ×10, tags ×8, résumé ×5, corps ×1.
+        - Retourné dans `items[].score` (ex: `16.0` si "militant" est dans le titre ET les tags).
+  - **Recherche par AUTEUR (nom/prénom, pas UUID) — pour un visiteur lambda** :
+    - `author="Fatou Kiné Sarr"` — ILIKE multi-mots sur `users.nom / prenom / email`.
+    - Pas besoin de connaître l'`author_id`.
+  - **Filtres commissariat (3 modes)** :
+    - `commissariat="Dakar-Plateau"` → égalité stricte.
+    - `commissariats="Dakar-Plateau,Guediawaye,Pikine"` → multi-valeurs (OR, liste CSV).
+    - `commissariat_contains="parcelle"` → ILIKE "contient" (pour ceux qui ne connaissent pas le nom exact).
+  - **Filtres tags** (sur le champ `tags` JSON stocké en texte) :
+    - `tags="education,jeunesse"` — **OU** (le titre en contient au moins un).
+    - `tags_all="sante,hygiene"` — **ET** (doit contenir tous les mots).
+  - **Filtres temporels** :
+    - `published_from=2026-08-01T00:00:00Z` (ISO 8601, UTC de préférence).
+    - `published_to=2026-08-31T23:59:59Z`.
+  - **Tri** (`sort`) :
+    - `auto` — **défaut**. Relevance si `q` fourni, sinon `latest`.
+    - `latest` — plus récents d'abord (published_at DESC).
+    - `oldest` — plus anciens d'abord.
+    - `popular` — plus populaires (likes_count + view_count).
+    - `commented` — plus commentés d'abord.
+    - `relevance` — force le tri par score.
+  - **Pagination** : `page` (≥1), `page_size` (1..100, défaut 20).
+
+**Exemples concrets de requêtes (à tester en frontend) :**
+
+```
+# Cas 1 — moteur de recherche plein texte (le plus utilisé)
+GET /api/v1/articles?q=militant%20sante&page=1&page_size=12
+
+# Cas 2 — tous les articles de "Fatou Kiné Sarr" en tant que VISITEUR (pas login, pas UUID)
+GET /api/v1/articles?author=Fatou%20Kine%20Sarr&sort=latest
+
+# Cas 3 — tags "education jeunesse scolaire" + sous-mot "école" dans titre/body
+GET /api/v1/articles?tags=education,jeunesse,scolaire&q=ecole&sort=relevance
+
+# Cas 4 — les articles les plus COMMENTÉS des commissariats contenant "Dakar"
+GET /api/v1/articles?commissariat_contains=Dakar&sort=commented&page_size=20
+
+# Cas 5 — actualités 10 derniers jours, 10 articles/page
+GET /api/v1/articles?published_from=2026-08-05T00:00:00Z&sort=latest&page_size=10
+```
+
+Références backend (pour trace) :
+- Route publique : [routes/articles.py#L60-L102](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/articles.py#L60-L102)
+- Service list_public + score injecté : [services/article.py#L21-L101](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article.py#L21-L101) et [services/article.py#L235-L277](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article.py#L235-L277)
+- Repository (tokenisation, filtres, fallback AND→OR, tri) : [repositories/article.py#L17-L208](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/repositories/article.py#L17-L208)
+- Schema `ArticleOut.score` : [schemas/article.py#L31-L51](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/article.py#L31-L51)
+
+### 7.4 Détail / commentaires (publics)
 
 - `GET /api/v1/articles/{article_id}` : détail article publié (+ incrémente view_count)
   - Réponse : `ArticleOut`
-
 - `GET /api/v1/articles/{article_id}/comments` : commentaires paginés
   - Query : `page`, `page_size`
   - Réponse : `{ total, items: ArticleCommentOut[] }`
@@ -412,13 +482,13 @@ interface ArticleCommentOut {
 }
 ```
 
-### 7.4 Endpoints PROTÉGÉS (Bearer JWT)
+### 7.5 Endpoints PROTÉGÉS (Bearer JWT)
 Rôles autorisés : `militant` / `admin` / `comite_accueil` / `comite_directoire` / `coordinateur_commissariat` / `coordinateur_regional`.
 
 - `GET /api/v1/articles/mine : mes articles
   - Query : `page`, `page_size`, `status ∈ {draft,published}`, `include_deleted=true/false`
 
-- `POST /api/v1/articles` — multipart/form-data — création article`
+- `POST /api/v1/articles` — multipart/form-data — création article
 
 | Champ Form | type | oblig. |
 |---|---|---|
@@ -435,9 +505,9 @@ Rôles autorisés : `militant` / `admin` / `comite_accueil` / `comite_directoire
   - mêmes champs optionnels + `remove_attachment_ids` (JSON array ou CSV, UUIDs à supprimer)
   - règle net-count : `(existants - remove_ids) + nouveaux <= ARTICLE_MAX_ATTACHMENTS`
 
-- `DELETE /api/v1/articles/{article_id}` — soft delete (auteur seul OU admin
+- `DELETE /api/v1/articles/{article_id}` — soft delete (auteur seul OU admin)
 
-### 7.5 Likes
+### 7.6 Likes
 
 - `POST /api/v1/articles/{article_id}/like` (toggle on)
 - `DELETE /api/v1/articles/{article_id}/like` (toggle off)
@@ -448,7 +518,7 @@ Tous retournent :
 interface LikeResponse { liked: boolean; likes_count: number }
 ```
 
-### 7.6 Commentaires (protégés)
+### 7.7 Commentaires (protégés)
 
 - `POST /api/v1/articles/{article_id}/comments` — JSON
 ```ts
@@ -458,7 +528,7 @@ interface LikeResponse { liked: boolean; likes_count: number }
 - `PATCH /api/v1/articles/comments/{comment_id}` — JSON `{ body }` — éditer (auteur/admin)
 - `DELETE /api/v1/articles/comments/{comment_id}` — soft delete (auteur/admin)
 
-### 7.7 Erreurs spécifiques articles — codes stables
+### 7.8 Erreurs spécifiques articles — codes stables
 
 | HTTP | code | cause |
 |---|---|---|
@@ -466,6 +536,7 @@ interface LikeResponse { liked: boolean; likes_count: number }
 | 400 | `INVALID_MIME` | type MIME interdit |
 | 400 | `FILE_TOO_LARGE` | fichier trop gros |
 | 400 | `INVALID_STATUS` | status hors draft/published |
+| 400 | `INVALID_SORT` | tri invalide (valeurs autorisées : auto/latest/oldest/popular/commented/relevance) |
 | 400 | `INVALID_PARENT_COMMENT` | parent_id inexistant / mauvais article |
 | 403 | `FORBIDDEN` | pas auteur ni admin |
 | 404 | `NOT_FOUND` | article/commentaire introuvable |
@@ -509,7 +580,24 @@ Cela liste tous les endpoints + schémas de body/response à jour.
 
 ---
 
-## Checklist rapide côté frontend (ce que tu peux faire maintenant)
+## 9) Données de démo / seed backend (qualité des données)
+
+Pour les environnements de staging/développement, plusieurs seeds CLI existent pour peupler la DB + storage avec des données réalistes (**ne jamais lancer en production sans `--dry-run` d'abord) :
+
+| Besoin | Commande (Poetry | Notes |
+|---|---|---|
+| Comptes militants (pour adhérents validés SANS compte) + articles | `poetry run python -m app.cli.seed_militants_articles --dry-run --limit-militants 20` | Options : `--articles-per-militant`, `--article-status draft\|published`, `--likes-per-article 4,18`, `--comments-per-article 2,8`, `--replies-per-comment 0,3`. |
+| Articles supplémentaires sur comptes existants | `poetry run python -m app.cli.seed_articles_only --articles-per-militant 8,12` | Rajoute des likes/commentaires/répliques. |
+| **Images réelles Unsplash (catalogue 48 photos + scoring keywords | `poetry run python -m app.cli.seed_real_article_attachments --images-per-article "1,2" --cover-probability 0.7 --concurrent-downloads 6` | Options utiles : `--replace-existing-images` (défaut true, nettoie anciennes images), `--keep-existing-images`, `--limit-articles N`, `--article-ids A,B,C`, `--author-ids X,Y`). |
+| Exemple ciblé : **3 articles de Fatou Kiné Sarr** (images Unsplash) | `poetry run python -m app.cli.seed_real_article_attachments --article-ids "6ef23331-52c7-4aa7-a589-780998e2ecf7,62a12dba-b751-4489-8bbb-50e6a88d3c39,b5c8c468-5e5c-45bf-bd95-32641b080d43" --images-per-article "2,3" --cover-probability 1.0` | 👉 Auteure : Fatou Kiné Sarr (user_id=8fa67262-6474-468b-adb6-c43eb9dde479 — 11 articles, 3 déjà équipés (3 couvertures + 9 PJ JPEG concrets). Toutes servies par `/files/articles/...` via `LocalStorage`.
+
+Fichiers :
+- Catalogue Unsplash + constructeur URL + keywords (48 photos, Sénégal/Dakar/éducation/santé/agriculture/militant/culture…) : [_unsplash_catalog.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/cli/_unsplash_catalog.py#L1-L62)
+- Seed images réelles + filtres `--article-ids` / `--author-ids` : [seed_real_article_attachments.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/cli/seed_real_article_attachments.py#L1-L464)
+
+---
+
+## 10) Checklist rapide côté frontend (ce que tu peux faire MAINTENANT, à jour 2026-08-15)
 
 - [ ] Sur création adhésion, afficher les messages erreurs via `error.code` (`DUPLICATE_EMAIL`, `DUPLICATE_CNI`, `DUPLICATE_CARTE_ELECTEUR`, `VALIDATION_ERROR`).
 - [ ] Ajouter l’upload `profile_photo` au formulaire adhésion.
@@ -518,7 +606,14 @@ Cela liste tous les endpoints + schémas de body/response à jour.
 - [ ] Écrans stats militants : `/count`, `/stats/*`, `/timeseries`, `/hierarchy`.
 - [ ] Écran “carte membre” en suivi `/suivi` : utiliser `GET /militants/lookup?email=...` (ou autre critère).
 - [ ] Écran “espace membre” : login `email + carte pastef`, ensuite `GET /auth/me` pour afficher profil/photo/carte.
-- [ ] Module articles publiques : liste, détail, commentaires (GET public + like/comment connectés).
+- [ ] 🆕 **Module articles PUBLICS (point d’attention) :
+  - [ ] Barre de recherche `q` (champ libre) avec debounce 300ms) : `GET /articles?q=...` — les résultats tri pertinence auto, afficher `score` en badge de sous-titre (optionnel)
+  - [ ] Chips filtres : auteur (recherche nom/prénom → `author=...`)
+  - [ ] Filtres géographiques : `commissariat_contains` (texte libre) OU `commissariats` (liste multi-sélect à partir d'un `/geo autocomplete sur `GET /militants/stats/commissariats`)
+  - [ ] Chips tags : `tags` (OU) / `tags_all` (ET) – les tags existants sont listés dans chaque `ArticleOut.tags`
+  - [ ] Sélecteur de tri (segmented control) : `auto / latest / oldest / popular / commented`
+  - [ ] Filtre date (de/à) : `published_from` / `published_to` (ISO)
+  - [ ] Pagination (suivant/précédent) avec `page` / `page_size`
 - [ ] Module articles espaces membre : créer/éditer/supprimer article + uploads, likes, commentaires (réponses), `/articles/mine`.
 
 Fin du changelog.

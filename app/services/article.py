@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +16,19 @@ from app.repositories.article import (
     ArticleRepository,
 )
 from app.storage.local import LocalStorage
+
+
+_WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
+
+
+def _tokenize_query(q: str | None) -> list[str]:
+    if not q:
+        return []
+    out: list[str] = []
+    for t in _WORD_RE.findall(q.lower()):
+        if len(t) >= 2 and t not in out:
+            out.append(t)
+    return list(dict.fromkeys(out))
 
 
 @dataclass(frozen=True)
@@ -47,6 +61,45 @@ class ArticleService:
         self.comments = ArticleCommentRepository(session)
         self.storage = LocalStorage()
         self.settings = get_settings()
+
+    def _parse_tags_as_list(self, value) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(x) for x in value]
+        if isinstance(value, str):
+            if not value.strip():
+                return []
+            try:
+                return list(json.loads(value))
+            except Exception:
+                return [value]
+        return []
+
+    def _inject_relevance_scores(self, items: list[Article], query: str | None) -> None:
+        terms = _tokenize_query(query)
+        if not terms or not items:
+            return
+        for art in items:
+            score = 0.0
+            title_l = (art.title or "").lower()
+            summary_l = (art.summary or "").lower()
+            body_l = (art.body or "").lower()
+            tags_l = " ".join(self._parse_tags_as_list(art.tags)).lower()
+            for t in terms:
+                if t in title_l:
+                    score += 10.0
+                if t in summary_l:
+                    score += 5.0
+                if t in tags_l:
+                    score += 8.0
+                if t in body_l:
+                    score += 1.0
+            if score > 0:
+                art.score = round(score, 1)
+            else:
+                art.score = 0.0
+
 
     async def _tags_to_stored(self, tags: list[str] | None) -> str | None:
         if tags is None:
@@ -185,24 +238,43 @@ class ArticleService:
         page: int,
         page_size: int,
         commissariat: str | None,
+        commissariats: list[str] | None,
+        commissariat_contains: str | None,
         author_id: uuid.UUID | None,
+        author: str | None,
         query: str | None,
+        query_mode: str | None,
+        tags_any: list[str] | None,
+        tags_all: list[str] | None,
+        published_from: datetime | None,
+        published_to: datetime | None,
         sort: str,
     ) -> tuple[list[Article], int]:
-        if sort not in {"latest", "popular"}:
+        allowed_sorts = {"latest", "popular", "oldest", "commented", "relevance", "auto"}
+        if sort not in allowed_sorts:
             raise HTTPException(status_code=400, detail={"code": "INVALID_SORT", "message": "Tri invalide"})
         if page < 1:
             page = 1
         if page_size < 1 or page_size > 100:
             page_size = min(max(page_size, 1), 100)
-        return await self.articles.list_public(
+        items, total = await self.articles.list_public(
             page=page,
             page_size=page_size,
             commissariat=commissariat,
+            commissariats=commissariats,
+            commissariat_contains=commissariat_contains,
             author_id=author_id,
+            author=author,
             query=query,
+            query_mode=(query_mode or "auto").lower(),
+            tags_any=tags_any,
+            tags_all=tags_all,
+            published_from=published_from,
+            published_to=published_to,
             sort=sort,
         )
+        self._inject_relevance_scores(items, query)
+        return items, total
 
     async def list_owner(
         self,

@@ -1,14 +1,36 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, delete, desc, func, or_, select, update
+from sqlalchemy import and_, case, cast, delete, desc, func, or_, select, update, String as SAString
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.adhesion import Adhesion
 from app.models.article import Article, ArticleAttachment, ArticleComment, ArticleLike
+from app.models.user import User
+
+
+_WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
+
+
+def _tokenize_terms(query: str | None) -> list[str]:
+    if not query:
+        return []
+    terms: list[str] = []
+    for t in _WORD_RE.findall(query.lower()):
+        if len(t) >= 2 and t not in terms:
+            terms.append(t)
+    return list(dict.fromkeys(terms))
+
+
+def _split_csv(s: str | None) -> list[str]:
+    if not s:
+        return []
+    return [x.strip() for x in s.split(",") if x.strip()]
 
 
 class ArticleRepository:
@@ -48,36 +70,140 @@ class ArticleRepository:
         page: int,
         page_size: int,
         commissariat: str | None,
+        commissariats: list[str] | None,
+        commissariat_contains: str | None,
         author_id: uuid.UUID | None,
+        author: str | None,
         query: str | None,
+        query_mode: str,
+        tags_any: list[str] | None,
+        tags_all: list[str] | None,
+        published_from: datetime | None,
+        published_to: datetime | None,
         sort: str,
     ) -> tuple[list[Article], int]:
         where = [Article.status == "published", Article.deleted_at.is_(None)]
+        terms = _tokenize_terms(query)
+        mode = "and" if (query_mode or "").lower() not in {"or", "and", "auto"} else (query_mode or "and").lower()
+        use_author_join = bool(author_id) or bool(author)
+        score_expr = None
+
         if commissariat:
             where.append(Article.commissariat == commissariat)
+        if commissariats:
+            cleaned = [x for x in commissariats if x]
+            if cleaned:
+                where.append(Article.commissariat.in_(cleaned))
+        if commissariat_contains:
+            where.append(Article.commissariat.ilike(f"%{commissariat_contains.strip()}%"))
+        if published_from:
+            where.append(Article.published_at >= published_from)
+        if published_to:
+            where.append(Article.published_at <= published_to)
         if author_id:
             where.append(Article.author_id == author_id)
-        if query:
-            like = f"%{query.strip()}%"
-            where.append(
-                or_(
-                    Article.title.ilike(like),
-                    Article.summary.ilike(like),
-                    Article.body.ilike(like),
-                )
+
+        if tags_any:
+            likes = []
+            for t in tags_any:
+                esc = "%" + t.replace("%", "%%").replace("_", "\\_") + "%"
+                likes.append(cast(Article.tags, SAString).ilike(esc))
+            where.append(or_(*likes))
+        if tags_all:
+            for t in tags_all:
+                esc = "%" + t.replace("%", "%%").replace("_", "\\_") + "%"
+                where.append(cast(Article.tags, SAString).ilike(esc))
+
+        base_from = select(Article)
+        if use_author_join:
+            base_from = base_from.join(User, User.id == Article.author_id, isouter=False)
+        if author:
+            author_terms = _tokenize_terms(author)
+            if author_terms:
+                author_likes = []
+                for t in author_terms:
+                    like = f"%{t}%"
+                    author_likes.append(
+                        or_(
+                            User.nom.ilike(like),
+                            User.prenom.ilike(like),
+                            User.email.ilike(like),
+                        )
+                    )
+                where.append(and_(*author_likes))
+
+        if terms:
+            all_terms = list(terms)
+            title_score = 0
+            summary_score = 0
+            body_score = 0
+            tags_score = 0
+            per_term_matches = []
+            for t in all_terms:
+                like = f"%{t}%"
+                a_title = Article.title.ilike(like)
+                a_summary = Article.summary.ilike(like)
+                a_body = Article.body.ilike(like)
+                a_tags = cast(Article.tags, SAString).ilike(like)
+                per_term_matches.append(or_(a_title, a_summary, a_body, a_tags))
+                title_score = title_score + case((a_title, 1), else_=0)
+                summary_score = summary_score + case((a_summary, 1), else_=0)
+                body_score = body_score + case((a_body, 1), else_=0)
+                tags_score = tags_score + case((a_tags, 1), else_=0)
+
+            if mode == "or":
+                where.append(or_(*per_term_matches))
+            elif mode == "auto":
+                if len(all_terms) <= 1:
+                    where.append(or_(*per_term_matches) if per_term_matches else True)
+                else:
+                    where.append(or_(
+                        and_(*per_term_matches),
+                        (func.coalesce(title_score, 0) + func.coalesce(summary_score, 0) + func.coalesce(tags_score, 0)) >= 1,
+                    ))
+            else:  # and
+                where.append(and_(*per_term_matches) if per_term_matches else True)
+            score_expr = (
+                (title_score * 10)
+                + (summary_score * 5)
+                + (tags_score * 8)
+                + (body_score * 1)
             )
 
-        base = select(Article).where(and_(*where))
+        base = base_from.where(and_(*where))
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_q)).scalar_one()
 
+        if mode == "and" and terms and total == 0 and len(terms) > 1:
+            new_where = [w for w in where if True]
+            # remplacer la dernière clause AND terms par OR
+            last = new_where.pop() if new_where else None
+            _ = last
+            or_clause = or_(*per_term_matches)
+            new_where.append(or_clause)
+            base = base_from.where(and_(*new_where))
+            count_q2 = select(func.count()).select_from(base.subquery())
+            total = (await self.session.execute(count_q2)).scalar_one()
+
         if sort == "popular":
-            order = desc(Article.likes_count), desc(Article.view_count), desc(Article.published_at)
+            order = (desc(Article.likes_count), desc(Article.view_count), desc(Article.published_at))
+        elif sort == "oldest":
+            order = (Article.published_at.asc(), Article.created_at.asc())
+        elif sort == "commented":
+            order = (desc(Article.comments_count), desc(Article.likes_count), desc(Article.published_at))
+        elif sort == "latest":
+            order = (desc(Article.published_at), desc(Article.created_at))
+        elif sort == "relevance":
+            order = (desc(score_expr if score_expr is not None else 0), desc(Article.published_at), desc(Article.created_at))
+        elif terms and sort in ("auto", None, ""):
+            order = (desc(score_expr if score_expr is not None else 0), desc(Article.published_at), desc(Article.created_at))
         else:
-            order = desc(Article.published_at), desc(Article.created_at)
+            order = (desc(Article.published_at), desc(Article.created_at))
 
         offset = (page - 1) * page_size
         qy = base.order_by(*order).limit(page_size).offset(offset).options(*self._base_loads())
+        if use_author_join:
+            qy = qy.options(selectinload(Article.author))
         items = list((await self.session.execute(qy)).scalars().all())
         return items, int(total)
 

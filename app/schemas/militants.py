@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
+from app.core.urls import to_absolute_public_url
 from app.schemas.geo import CommuneOut, DepartementOut, PaysOut, RegionOut
 
 
@@ -76,6 +77,10 @@ class MilitantLookupData(BaseModel):
     departement_domicile: DepartementOut | None = None
     commune_domicile: CommuneOut | None = None
     pays_domicile: PaysOut | None = None
+
+    @field_serializer("photo_url", "profile_photo_url")
+    def _abs_urls(self, v: str | None) -> str | None:
+        return to_absolute_public_url(v)
 
 
 class MilitantLookupResponse(BaseModel):

@@ -3,8 +3,9 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
+from app.core.urls import to_absolute_public_url
 from app.models.enums import AdhesionStatus, EngagementType, PaymentMode
 from app.schemas.geo import CommuneOut, DepartementOut, PaysOut, RegionOut
 
@@ -92,6 +93,10 @@ class AdhesionDetailOut(BaseModel):
     certification: bool
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
+
+    @field_serializer("cv_url", "photo_recto_url", "photo_verso_url", "profile_photo_url")
+    def _abs_file_urls(self, v: str | None) -> str | None:
+        return to_absolute_public_url(v)
 
 
 class AdhesionDetailResponse(BaseModel):

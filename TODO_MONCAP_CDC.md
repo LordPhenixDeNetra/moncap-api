@@ -62,9 +62,43 @@ Source : [MONCAP_Cahier_des_Charges.md](file:///n:/OneDrive%20-%20Universit%C3%A
   - [x] Endpoints **militants / connectés** : `/mine`, créer/modifier/supprimer (brouillon/publié), like/unlike, commenter/répondre, éditer/supprimer commentaire : [routes/articles.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/articles.py)
   - [x] Upload multipart : **image de couverture** + **pièces jointes** (config `ARTICLE_MAX_ATTACHMENTS` via `.env`, défaut = 5), validation mime/taille, net count sur update (suppressions + ajouts)
   - [x] Modération : rôle `admin` peut éditer / supprimer n’importe quel article ou commentaire (ownership author OR `is_admin`)
+  - [x] **ENDPOINT RECHERCHE PUISSANT (2026-08-15)** :
+    - [x] `q` + `q_mode=auto/and/or` — tokenisation multi-mot AND puis fallback OR auto (écran vide jamais)
+    - [x] `score: number` dans `ArticleOut` — pondérations `title×10 / tags×8 / summary×5 / body×1` + tri pertinence SQL/Python cohérents
+    - [x] `author="nom prénom"` — JOIN User ILike nom/prénom/email (pas besoin d'UUID)
+    - [x] `commissariat` / `commissariats=A,B,C` / `commissariat_contains=...` (3 modes : exact, multi, contient)
+    - [x] `tags=A,B` OU · `tags_all=X,Y` ET
+    - [x] `published_from` / `published_to` (ISO 8601)
+    - [x] `sort ∈ auto/latest/oldest/popular/commented/relevance`
+  - [x] **Données de démo (concrètes) :**
+    - [x] Seed adhérents → comptes militants + articles : `app/cli/seed_militants_articles.py`
+    - [x] Seed likes/commentaires/réponses : `app/cli/seed_articles_only.py` (163 articles, ~1528 likes, 780 comments, 1174 replies en base)
+    - [x] Seed **images réelles Unsplash (48 catalogue photo IDs)** : `app/cli/_unsplash_catalog.py` + `app/cli/seed_real_article_attachments.py`
+    - [x] Exemple exécuté : 3 articles de **Fatou Kiné Sarr** (3 couvertures + 9 pièces jointes JPEG, min. 58 Ko) — commandes disponibles dans le `CHANGELOG_FRONTEND_MONCAP.md`, section 9) — consultables via URLs `/files/articles/covers/<uuid>.jpg` et `/files/articles/<hex>/attachments/<uuid>.jpg`
 - Reste à faire / à arbitrer :
   - [ ] Publication directe vs validation par coordinateur (cf question §Blocants n°4)
   - [ ] Scope “coordinateur de commissariat” : autoriser modération uniquement sur son commissariat
+  - [ ] ⭐ **Améliorations recherche (optimisations performance)** :
+    - [ ] Migration Alembic : `articles.tags TEXT → JSONB` + index **GIN (tags jsonb_path_ops)** — actuellement `cast(tags, String).ilike(...)` fonctionne mais lent sur gros volume
+    - [ ] Index Postgres `(status, deleted_at, published_at DESC)` pour liste paginée sans filtre
+    - [ ] **Full-text PostgreSQL français** : colonne `tsv tsvector GENERATED ALWAYS AS (to_tsvector('french', coalesce(title,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(body,'') || ' ' || coalesce(tags::text,''))) STORED` + index **GIN(tsv)** + ranking `ts_rank_cd(tsv, plainto_tsquery('french', q))` + snippet `ts_headline('french', body, plainto_tsquery(...))`
+    - [ ] **Facettes dynamiques** : dans `ArticleListResponse`, ajouter un champ `facets: { commissariats: Array<{value, count}>, tags: Array<{value, count}> }` — 1 aller-retour DB en même temps que la liste, permet au frontend d'afficher des filtres avec compteurs (ex: "Dakar: 42, Pikine: 18, Santé: 21…")
+    - [ ] Filtre `has_media ∈ { photo, doc, any }` sur `cover_url IS NOT NULL` et `EXISTS attachments` selon mime
+    - [ ] Filtre `diaspora ∈ { 0,1 }` via `JOIN Adhesion ON Adhesion.id = User.adhesion_id → Adhesion.est_diaspora`
+    - [ ] `sort=random()` (découverte accueil)
+  - [ ] ⭐ **Réduction payload list** :
+    - [ ] Option `include_body=true|false` (défaut **false** dans listes) — aujourd'hui le body entier part (5-20 Ko / article → 1 Mo sur page 50 articles)
+    - [ ] Option `fields=summary,tags,attachments` projection
+  - [ ] ⭐ **Qualité / tests / tech-debt** :
+    - [ ] **Supprimer scripts CLI debug temporaires** (ne doivent pas partir en prod / doivent être documentés dans un `scripts/` à part ou préfixés clairement et exclus des imports) — actuellement présents dans `app/cli/` :
+      - `_debug_unsplash.py`
+      - `_find_fatou_kine_sarr.py`
+      - `_verify_3_fatou_kine_sarr.py`
+      - `_cleanup_article_media_db.py`
+      - `_smoke_article_search.py`
+    - [ ] Tests unitaires `pytest-asyncio` repository `ArticleRepository.list_public` → scénarios : multi-mot AND→OR fallback, author join, tags_any/tags_all, sort commented, score injecté
+    - [ ] Tests contractuels OpenAPI sur `GET /api/v1/articles` (schemas de réponse + nouveaux query params)
+    - [ ] Ajouter `with_counts` (boolean query param) pour activer les facettes (pas par défaut, pour perf)
 
 ---
 

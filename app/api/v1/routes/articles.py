@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, get_principal, require_roles
@@ -26,6 +27,12 @@ from app.services.article import ArticleService, CreateArticleInput, UpdateArtic
 
 public_router = APIRouter(prefix="/articles", tags=["Articles"])
 protected_router = APIRouter(prefix="/articles", tags=["Articles"])
+
+
+def _split_csv(s: str | None) -> list[str]:
+    if not s:
+        return []
+    return [x.strip() for x in s.split(",") if x.strip()]
 
 
 def _to_comment_out(c, principal_id: uuid.UUID | None) -> ArticleCommentOut:
@@ -52,20 +59,39 @@ def _is_admin(principal: Principal) -> bool:
 
 @public_router.get("", response_model=ArticleListResponse)
 async def list_articles_public(
-    page: int = 1,
-    page_size: int = 20,
-    commissariat: str | None = None,
-    author_id: uuid.UUID | None = None,
-    q: str | None = None,
-    sort: str = "latest",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    commissariat: str | None = Query(default=None),
+    commissariats: str | None = Query(default=None),
+    commissariat_contains: str | None = Query(default=None),
+    author_id: uuid.UUID | None = Query(default=None),
+    author: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    q_mode: str = Query(default="auto"),
+    tags: str | None = Query(default=None),
+    tags_all: str | None = Query(default=None),
+    published_from: datetime | None = Query(default=None),
+    published_to: datetime | None = Query(default=None),
+    sort: str = Query(default="auto"),
     db: AsyncSession = Depends(get_db),
 ):
+    tags_any = _split_csv(tags)
+    tags_all_list = _split_csv(tags_all)
+    commissariats_list = _split_csv(commissariats)
     items, total = await ArticleService(db).list_public(
         page=page,
         page_size=page_size,
         commissariat=commissariat,
+        commissariats=commissariats_list or None,
+        commissariat_contains=commissariat_contains,
         author_id=author_id,
+        author=author,
         query=q,
+        query_mode=q_mode,
+        tags_any=tags_any or None,
+        tags_all=tags_all_list or None,
+        published_from=published_from,
+        published_to=published_to,
         sort=sort,
     )
     return ArticleListResponse(
