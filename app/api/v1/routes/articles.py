@@ -28,26 +28,16 @@ from app.services.article import ArticleService, CreateArticleInput, UpdateArtic
 
 public_router = APIRouter(prefix="/articles", tags=["Articles"])
 protected_router = APIRouter(prefix="/articles", tags=["Articles"])
+mine_router = APIRouter(prefix="/articles", tags=["Articles"])
 
-
-UUID_PATTERN = (
-    r"^[0-9a-fA-F]{8}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{12}$"
-)
 
 _ArticleIdPath = Annotated[
     uuid.UUID,
     Path(
         ...,
         description="Identifiant unique de l'article (format UUID RFC 4122).",
-        pattern=UUID_PATTERN,
     ),
 ]
-
-_ArticleIdPathOrInt = _ArticleIdPath  # alias backward compat si besoin
 
 
 def _split_csv(s: str | None) -> list[str]:
@@ -188,7 +178,7 @@ def _parse_remove_ids(ids: str | None) -> list[uuid.UUID] | None:
 _ALLOWED_ARTICLE_STATUS = {"draft", "published"}
 
 
-@protected_router.get(
+@mine_router.get(
     "/mine",
     response_model=ArticleListResponse,
     dependencies=[Depends(require_roles(*AUTHORIZED_ROLES))],
