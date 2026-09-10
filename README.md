@@ -99,4 +99,13 @@ python -m poetry run pytest
 poetry --version
 poetry install -->
 
+<!-- 
+
+poetry lock --no-update       # ~2-3 min selon réseau
+poetry install                # applique le lock
+
+poetry run pip install httpx "qrcode[pil]" pillow
+ -->
+
+
 <!-- python -m poetry run uvicorn main:app --reload --host 127.0.0.1 --port 8000 -->

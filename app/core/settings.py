@@ -129,6 +129,14 @@ class Settings(BaseSettings):
         ],
     )
 
+    kopar_enabled: bool = False
+    kopar_base_url: str = "https://koparpay.com"
+    kopar_api_key: str | None = None
+    kopar_private_key: str | None = None
+
+    default_adhesion_fcfa: int = 5
+    default_cotisation_mensuelle_fcfa: int = 5
+
     @model_validator(mode="after")
     def _apply_derived_defaults(self) -> "Settings":
         if self.public_base_url is None and self.api_base_url:

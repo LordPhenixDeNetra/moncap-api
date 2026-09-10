@@ -7,6 +7,7 @@ from app.api.v1.routes import auth
 from app.api.v1.routes import geo
 from app.api.v1.routes import health
 from app.api.v1.routes import militants
+from app.api.v1.routes import paiements
 from app.api.v1.routes import users
 from app.api.v1.routes import validations
 
@@ -26,3 +27,7 @@ api_v1_router.include_router(validations.accueil_router, tags=["validations"])
 api_v1_router.include_router(validations.directoire_router, tags=["validations"])
 api_v1_router.include_router(validations.rejection_router, tags=["validations"])
 api_v1_router.include_router(users.router, tags=["users"])
+api_v1_router.include_router(paiements.public_router, tags=["paiements"])
+api_v1_router.include_router(paiements.protected_router, tags=["paiements"])
+api_v1_router.include_router(paiements.adherent_router, tags=["adherent"])
+api_v1_router.include_router(paiements.admin_router, tags=["admin"])

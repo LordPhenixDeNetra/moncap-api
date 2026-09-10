@@ -11,11 +11,13 @@ from app.core.security import normalize_email
 from app.core.settings import get_settings
 from app.db.session import get_db
 from app.models.enums import EngagementType, PaymentMode
+from app.models.paiements import ParametrePaiementCode
 from app.repositories.adhesions import AdhesionRepository
 from app.schemas.adhesions import AdhesionCreatedResponse, AdhesionPublicListResponse
 from app.services.adhesions import AdhesionService, CreateAdhesionInput
 from app.services.adhesion_mail_templates import build_adhesion_created
 from app.services.mail import send_email_best_effort
+from app.services.paiements import ParametresPaiementService
 
 router = APIRouter(prefix="/adhesions")
 
@@ -59,7 +61,7 @@ async def create_adhesion(
     commissariat_scientifique_principal: str | None = Form(None),
     commissariat_scientifique_secondaire: str | None = Form(None),
     mode_paiement: PaymentMode = Form(...),
-    montant_adhesion: int = Form(25000),
+    montant_adhesion: int | None = Form(None),
     reference_paiement: str | None = Form(None),
     certification: bool = Form(...),
     photo_recto: UploadFile | None = File(None),
@@ -73,6 +75,12 @@ async def create_adhesion(
     photo_recto_final = photo_recto or photo
     if not photo_recto_final:
         raise HTTPException(status_code=422, detail="photo_recto (ou photo) est requis")
+
+    if montant_adhesion is None or montant_adhesion <= 0:
+        montant_adhesion = await ParametresPaiementService(db).get_montant(
+            ParametrePaiementCode.adhesion_initiale,
+            at_date=date.today(),
+        )
 
     data = CreateAdhesionInput(
         nom=nom,

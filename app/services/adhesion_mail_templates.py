@@ -138,6 +138,210 @@ def build_payment_confirmed(*, adhesion: Adhesion, base_url: str | None = None) 
     return subject, text, html
 
 
+def build_paiement_adhesion_confirme(
+    *,
+    adhesion: Adhesion,
+    base_url: str | None = None,
+    montant: int,
+    reference: str,
+) -> tuple[str, str, str]:
+    full_name = _format_full_name(adhesion)
+    subject = "MONCAP — Paiement frais d'adhésion confirmé ✅"
+    link = _maybe_tracking_link(base_url=base_url, adhesion=adhesion)
+
+    text_lines = [
+        f"Bonjour {full_name}," if full_name else "Bonjour,",
+        "",
+        "Merci ! Votre paiement des frais d'adhésion a bien été reçu.",
+        f"Montant: {montant} FCFA",
+        f"Référence paiement: {reference}",
+        "",
+        "Votre dossier est en cours d'examen par nos comités de validation.",
+    ]
+    if link:
+        text_lines += ["", f"Suivi de votre demande: {link}"]
+    text_lines += ["", "Bienvenue dans la famille MONCAP !"]
+    text = "\n".join(text_lines) + "\n"
+
+    html = f"""
+    <html>
+      <body style="font-family:Arial, sans-serif; line-height:1.5; color:#222;">
+        <p>{escape(f"Bonjour {full_name}," if full_name else "Bonjour,")}</p>
+        <p style="color:#1e8449; font-size:16px;"><strong>✅ Paiement frais d'adhésion confirmé</strong></p>
+        <p>Merci ! Votre paiement a bien été reçu.</p>
+        <ul>
+          <li><strong>Montant</strong>: {escape(str(montant))} FCFA</li>
+          <li><strong>Référence</strong>: {escape(reference)}</li>
+        </ul>
+        <p>Votre dossier est en cours d'examen par nos comités de validation.</p>
+        {f'<p>Suivi de votre demande: <a href="{link}">{link}</a></p>' if link else ''}
+        <p>Bienvenue dans la famille MONCAP ! 🙏</p>
+      </body>
+    </html>
+    """.strip()
+    return subject, text, html
+
+
+def build_cotisation_paiement_confirme(
+    *,
+    adhesion: Adhesion,
+    base_url: str | None = None,
+    annee: int,
+    mois: int,
+    montant: int,
+    reference: str,
+) -> tuple[str, str, str]:
+    noms_mois = [
+        "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+    ]
+    mois_label = noms_mois[mois - 1] if 1 <= mois <= 12 else str(mois)
+    full_name = _format_full_name(adhesion)
+    subject = f"MONCAP — Cotisation {mois_label} {annee} réglée ✅"
+    link = base_url.rstrip("/") + "/mon-compte/cotisations" if base_url else None
+
+    text_lines = [
+        f"Bonjour {full_name}," if full_name else "Bonjour,",
+        "",
+        f"Merci ! Votre cotisation de {mois_label} {annee} a bien été réglée.",
+        f"Montant: {montant} FCFA",
+        f"Référence paiement: {reference}",
+    ]
+    if link:
+        text_lines += ["", f"Historique de vos cotisations: {link}"]
+    text_lines += ["", "Merci pour votre engagement !"]
+    text = "\n".join(text_lines) + "\n"
+
+    html = f"""
+    <html>
+      <body style="font-family:Arial, sans-serif; line-height:1.5; color:#222;">
+        <p>{escape(f"Bonjour {full_name}," if full_name else "Bonjour,")}</p>
+        <p style="color:#1e8449; font-size:16px;"><strong>✅ Cotisation {escape(mois_label)} {annee} réglée</strong></p>
+        <p>Merci ! Votre cotisation mensuelle a bien été réglée.</p>
+        <ul>
+          <li><strong>Période</strong>: {escape(mois_label)} {annee}</li>
+          <li><strong>Montant</strong>: {escape(str(montant))} FCFA</li>
+          <li><strong>Référence</strong>: {escape(reference)}</li>
+        </ul>
+        {f'<p>Historique de vos cotisations: <a href="{link}">{link}</a></p>' if link else ''}
+        <p>Merci pour votre engagement, camarade. 🙏</p>
+      </body>
+    </html>
+    """.strip()
+    return subject, text, html
+
+
+def build_relance_cotisation_impayee(
+    *,
+    adhesion: Adhesion,
+    base_url: str | None = None,
+    annee: int,
+    mois: int,
+    montant: int,
+    niveau: int = 1,
+    qr_url: str | None = None,
+) -> tuple[str, str, str]:
+    noms_mois = [
+        "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+    ]
+    mois_label = noms_mois[mois - 1] if 1 <= mois <= 12 else str(mois)
+    full_name = _format_full_name(adhesion)
+    prefix = "RAPPEL — " if niveau == 1 else "DERNIER RAPPEL — "
+    subject = f"MONCAP — {prefix}Cotisation {mois_label} {annee} en attente"
+    link = base_url.rstrip("/") + f"/payer-cotisation?adh={adhesion.id}" if base_url else None
+
+    text_lines = [
+        f"Bonjour {full_name}," if full_name else "Bonjour,",
+        "",
+        f"Nous n'avons pas encore enregistré votre cotisation de {mois_label} {annee} ({montant} FCFA).",
+        "",
+        "Pour la régler maintenant :",
+    ]
+    if link:
+        text_lines += [f"  - Cliquez ici : {link}"]
+    if qr_url:
+        text_lines += [f"  - Ou scannez votre QR Code permanent : {qr_url}"]
+    text_lines += [
+        "",
+        "Si vous avez déjà réglé ce mois-ci, merci d'ignorer ce message ou de nous contacter.",
+    ]
+    text = "\n".join(text_lines) + "\n"
+
+    qr_html = f'<p><img src="{qr_url}" alt="QR Code cotisation" style="max-width:220px; border:1px solid #ccc; padding:6px; background:#fff;" /></p>' if qr_url else ''
+    html = f"""
+    <html>
+      <body style="font-family:Arial, sans-serif; line-height:1.5; color:#222;">
+        <p>{escape(f"Bonjour {full_name}," if full_name else "Bonjour,")}</p>
+        <p style="color:#b7950b; font-size:16px;"><strong>⏰ {escape(prefix)}Cotisation {escape(mois_label)} {annee} en attente</strong></p>
+        <p>Nous n'avons pas encore enregistré votre cotisation de <strong>{escape(mois_label)} {annee}</strong> : <strong>{escape(str(montant))} FCFA</strong>.</p>
+        <p>Pour la régler maintenant :</p>
+        <ul>
+          {f'<li>👉 <a href="{link}">Cliquez ici pour payer en ligne</a></li>' if link else ''}
+          {'<li>📱 Scannez le QR Code ci-dessous (valable à vie) :</li>' if qr_url else ''}
+        </ul>
+        {qr_html}
+        <p style="color:#666; font-size:13px;">Si vous avez déjà réglé ce mois-ci, merci d'ignorer ce message ou de nous contacter.</p>
+      </body>
+    </html>
+    """.strip()
+    return subject, text, html
+
+
+def build_notification_cotisation_mois_disponible(
+    *,
+    adhesion: Adhesion,
+    base_url: str | None = None,
+    annee: int,
+    mois: int,
+    montant: int,
+    qr_url: str | None = None,
+) -> tuple[str, str, str]:
+    noms_mois = [
+        "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+    ]
+    mois_label = noms_mois[mois - 1] if 1 <= mois <= 12 else str(mois)
+    full_name = _format_full_name(adhesion)
+    subject = f"MONCAP — Votre cotisation de {mois_label} {annee} est prête"
+
+    text_lines = [
+        f"Bonjour {full_name}," if full_name else "Bonjour,",
+        "",
+        f"Bon début de mois ! Votre cotisation de {mois_label} {annee} est maintenant disponible : {montant} FCFA.",
+        "",
+        "Merci de la régler au plus tôt :",
+    ]
+    if base_url:
+        text_lines += [
+            f"  - Lien de paiement : {base_url.rstrip('/')}/payer-cotisation?adh={adhesion.id}",
+        ]
+    if qr_url:
+        text_lines += [f"  - Votre QR Code permanent : {qr_url}"]
+    text_lines += ["", "Merci pour votre engagement !"]
+    text = "\n".join(text_lines) + "\n"
+
+    qr_html = f'<p><img src="{qr_url}" alt="QR Code cotisation" style="max-width:220px; border:1px solid #ccc; padding:6px; background:#fff;" /></p>' if qr_url else ''
+    lien = base_url.rstrip("/") + f"/payer-cotisation?adh={adhesion.id}" if base_url else None
+    html = f"""
+    <html>
+      <body style="font-family:Arial, sans-serif; line-height:1.5; color:#222;">
+        <p>{escape(f"Bonjour {full_name}," if full_name else "Bonjour,")}</p>
+        <p style="color:#2e86c1; font-size:16px;"><strong>📅 {escape(mois_label)} {annee} : cotisation disponible</strong></p>
+        <p>Bon début de mois ! Votre cotisation de <strong>{escape(mois_label)} {annee}</strong> est maintenant disponible : <strong>{escape(str(montant))} FCFA</strong>.</p>
+        <p>Merci de la régler au plus tôt :</p>
+        <ul>
+          {f'<li>👉 <a href="{lien}">Payer en ligne en 1 clic (Wave/Orange Money)</a></li>' if lien else ''}
+          {'<li>📱 Ou scannez votre QR Code permanent (valable à vie) :</li>' if qr_url else ''}
+        </ul>
+        {qr_html}
+        <p>Merci pour votre engagement. 🙏</p>
+      </body>
+    </html>
+    """.strip()
+    return subject, text, html
+
+
 def _derive_password_label(adhesion: Adhesion) -> tuple[str, str]:
     """Retourne (valeur, label_humain) du mot de passe initial selon les
     règle de MemberAccountService._build_initial_password.

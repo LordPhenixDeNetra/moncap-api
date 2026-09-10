@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
@@ -8,9 +10,22 @@ from app.core.middleware import RequestIdMiddleware, TimingMiddleware
 from app.core.settings import get_settings
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.db.session import AsyncSessionLocal
+    from app.services.paiements import ParametresPaiementService
+    try:
+        async with AsyncSessionLocal() as session:
+            ps = ParametresPaiementService(session)
+            await ps.seed_defaults_if_empty()
+    except Exception:
+        pass
+    yield
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.api_title)
+    app = FastAPI(title=settings.api_title, lifespan=lifespan)
 
     install_exception_handlers(app)
 
