@@ -169,6 +169,32 @@ async def etat_cotisation_publique(
     }
 
 
+@public_router.get(
+    "/parametres-public",
+    response_model=ParametresPaiementListResponse,
+    summary="(Public) Lister les paramètres de paiement actifs (tarifs + règle première cotisation)",
+    description="Endpoint public pour le frontend : charge les tarifs adhésion + cotisation mensuelle + règle de première cotisation DÈS LE FORMULAIRE /adhesion, pour que l'adhérent·e voit immédiatement le montant exact facturé et qu'il n'y ait pas de décalage entre formulaire et paiement Kopar.",
+)
+async def parametres_paiement_publics(
+    db: AsyncSession = Depends(get_db),
+):
+    today = date.today()
+    svc = ParametresPaiementService(db)
+    items: list = []
+    for code in (
+        ParametrePaiementCode.adhesion_initiale,
+        ParametrePaiementCode.cotisation_mensuelle,
+        ParametrePaiementCode.regle_date_premiere_cotisation,
+    ):
+        p = await svc.repo.get_active_for_code_at(code, today)
+        if p is not None:
+            items.append(p)
+    data: list[ParametrePaiementOut] = [
+        ParametrePaiementOut.model_validate(p) for p in items
+    ]
+    return {"data": data, "count": len(data)}
+
+
 @public_router.post(
     "/adhesion/{adhesion_id}/initier-public",
     response_model=InitPaiementResponse,
@@ -195,6 +221,27 @@ async def initier_paiement_adhesion_public(
 
     if adhesion.montant_adhesion is None or adhesion.montant_adhesion <= 0:
         adhesion.montant_adhesion = 25000
+
+    try:
+        from app.services.paiements import ParametresPaiementService
+        from app.models.paiements import ParametrePaiementCode
+        from datetime import date
+
+        params_svc = ParametresPaiementService(db)
+        montant_reference = await params_svc.get_montant(
+            ParametrePaiementCode.adhesion_initiale, date.today()
+        )
+        if montant_reference and montant_reference > 0:
+            if (
+                adhesion.montant_adhesion is None
+                or abs(adhesion.montant_adhesion - montant_reference) > 1
+            ):
+                adhesion.montant_adhesion = montant_reference
+            montant_kopar = montant_reference
+        else:
+            montant_kopar = adhesion.montant_adhesion or 25000
+    except Exception:
+        montant_kopar = adhesion.montant_adhesion or 25000
 
     orchestrator = PaiementOrchestratorService(db)
     try:
@@ -243,6 +290,25 @@ async def initier_paiement_adhesion(
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_db),
 ):
+    adhesion_repo = AdhesionRepository(db)
+    adhesion = await adhesion_repo.get_by_id(adhesion_id)
+    if not adhesion:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
+    if adhesion.montant_adhesion is None or adhesion.montant_adhesion <= 0:
+        adhesion.montant_adhesion = 25000
+    try:
+        params_svc = ParametresPaiementService(db)
+        montant_reference = await params_svc.get_montant(
+            ParametrePaiementCode.adhesion_initiale, date.today()
+        )
+        if montant_reference and montant_reference > 0:
+            if (
+                adhesion.montant_adhesion is None
+                or abs(adhesion.montant_adhesion - montant_reference) > 1
+            ):
+                adhesion.montant_adhesion = montant_reference
+    except Exception:
+        pass
     orchestrator = PaiementOrchestratorService(db)
     try:
         initie = await orchestrator.initier_paiement_adhesion(
@@ -276,15 +342,31 @@ async def initier_paiement_cotisation(
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_db),
 ):
+    try:
+        from app.repositories.paiements import CotisationMensuelleRepository
+
+        cot_repo = CotisationMensuelleRepository(db)
+        c = await cot_repo.get_by_id(cotisation_id)
+        if c is not None:
+            params_svc = ParametresPaiementService(db)
+            montant_reference = await params_svc.get_montant(
+                ParametrePaiementCode.cotisation_mensuelle, date.today()
+            )
+            if montant_reference and montant_reference > 0:
+                if c.montant is None or abs(c.montant - montant_reference) > 1:
+                    c.montant = montant_reference
+    except Exception:
+        pass
     orchestrator = PaiementOrchestratorService(db)
     try:
         initie = await orchestrator.initier_paiement_cotisation(
             cotisation_id, service=service, force=force
         )
     except KoparError as e:
-        detail = {"code": "KOPAR_ERROR", "message": e.message}
+        detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
         if e.details is not None:
             detail["detailsBrutsKopar"] = e.details
+            detail["details"] = e.details
         raise HTTPException(status_code=e.status_code, detail=detail)
     await db.commit()
     return {
