@@ -25,6 +25,7 @@ class PaymentMode(StrEnum):
     carte_bancaire = "carte_bancaire"
     prelevement_bancaire = "prelevement_bancaire"
     especes = "especes"
+    kopar_pay = "kopar_pay"
 
 
 class AppRole(StrEnum):

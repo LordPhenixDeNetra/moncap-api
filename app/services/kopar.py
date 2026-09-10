@@ -3,14 +3,19 @@ from __future__ import annotations
 import hmac
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import httpx
 
 from app.core.settings import get_settings
 from app.models.paiements import StatutTransactionKopar
+
+
+logger = logging.getLogger(__name__)
 
 
 KOPAR_SERVICES = {
@@ -99,6 +104,13 @@ class KoparClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 r = await client.post(url, json=payload, headers={"Content-Type": "application/json"})
                 if r.status_code >= 500:
+                    logger.error(
+                        "Kopar erreur serveur HTTP %s sur %s — body=%s — payload envoyé=%s",
+                        r.status_code,
+                        url,
+                        r.text[:500],
+                        payload,
+                    )
                     raise KoparError(
                         f"Kopar erreur serveur HTTP {r.status_code}",
                         r.status_code,
@@ -110,6 +122,15 @@ class KoparClient:
                     data = {"_raw": r.text[:500]}
                 if r.status_code >= 400:
                     msg = data.get("message") or data.get("error") or f"Erreur Kopar HTTP {r.status_code}"
+                    err_details = data.get("details") or data.get("errors") or data.get("data") or data
+                    logger.warning(
+                        "Kopar HTTP %s sur %s — message=%s — details bruts kopar=%s — payload envoyé=%s",
+                        r.status_code,
+                        url,
+                        msg,
+                        err_details,
+                        payload,
+                    )
                     raise KoparError(msg, r.status_code, data)
                 return data
         except KoparError:
@@ -164,6 +185,13 @@ class KoparClient:
         currency: str = "XOF",
         editable_amount: bool = False,
         custom_fields: dict | None = None,
+        document_number: str | None = None,
+        document_type: str = "CNI",
+        birth_date: date | None = None,
+        birth_place: str | None = "",
+        city: str | None = "",
+        address: str | None = "",
+        service_paiement: str | None = None,
     ) -> KoparPaiementInitie:
         payload: dict[str, Any] = {
             "apiKey": self.api_key,
@@ -188,6 +216,49 @@ class KoparClient:
         if custom_fields:
             payload["customFields"] = json.dumps(custom_fields, ensure_ascii=False)
 
+        user_kyc: dict[str, Any] = {}
+        if first_name:
+            user_kyc["firstName"] = first_name
+        if last_name:
+            user_kyc["lastName"] = last_name
+        if phone_number:
+            user_kyc["phoneNumber"] = phone_number
+        if email:
+            user_kyc["email"] = email
+        if document_number:
+            user_kyc["documentNumber"] = document_number
+            user_kyc["documentType"] = document_type or "CNI"
+        if birth_date is not None:
+            user_kyc["birthDate"] = (
+                birth_date.isoformat() if hasattr(birth_date, "isoformat") else str(birth_date)
+            )
+        if birth_place:
+            user_kyc["birthPlace"] = birth_place
+        if country_code:
+            user_kyc["country"] = country_code
+        if city is not None:
+            user_kyc["city"] = city
+        if address is not None:
+            user_kyc["address"] = address
+        payload["userKyc"] = user_kyc
+
+        service = service_paiement or "kopar_services_cross"
+        mapping: dict[str, str] = {
+            "wave_checkout": "wave",
+            "orange_money_sn": "orange_money",
+            "wave_checkout_ci": "wave",
+            "kopar_services_cross": "kopar_cross",
+        }
+        payment_method = mapping.get(service, service)
+        bank_details: dict[str, Any] = {
+            "paymentMethod": payment_method,
+            "phone": phone_number or "",
+            "country": country_code or "SN",
+            "currency": currency or "XOF",
+            "serviceId": service,
+        }
+        payload["bankDetails"] = bank_details
+
         data = await self._post("/api/v2/transaction/request", payload)
         status = data.get("status")
         token = data.get("token")
@@ -211,11 +282,40 @@ class KoparClient:
         self,
         token: str,
         service: str,
+        *,
+        user_kyc: dict | None = None,
+        bank_details: dict | None = None,
+        country_code: str = "SN",
+        currency: str = "XOF",
+        phone_number: str | None = None,
     ) -> KoparPaiementInitie:
-        data = await self._post(
-            f"/api/v2/transaction/{token}/checkout",
-            {"service": service},
-        )
+        payload: dict[str, Any] = {"service": service}
+        if user_kyc:
+            payload["userKyc"] = user_kyc
+        else:
+            payload["userKyc"] = {
+                "country": country_code,
+                "city": "",
+                "address": "",
+            }
+        if bank_details:
+            payload["bankDetails"] = bank_details
+        else:
+            mapping = {
+                "wave_checkout": "wave",
+                "orange_money_sn": "orange_money",
+                "wave_checkout_ci": "wave",
+                "kopar_services_cross": "kopar_cross",
+            }
+            payment_method = mapping.get(service, service)
+            payload["bankDetails"] = {
+                "paymentMethod": payment_method,
+                "phone": phone_number or "",
+                "country": country_code,
+                "currency": currency,
+                "serviceId": service,
+            }
+        data = await self._post(f"/api/v2/transaction/{token}/checkout", payload)
         data_node = data.get("data") or {}
         tx = data_node.get("transaction") or {}
         provider = data_node.get("providerResponse") or {}

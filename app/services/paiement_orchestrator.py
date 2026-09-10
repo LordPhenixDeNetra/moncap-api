@@ -134,6 +134,14 @@ class PaiementOrchestratorService:
         *,
         force: bool = False,
         service: str | None = None,
+        override_prenom: str | None = None,
+        override_nom: str | None = None,
+        override_telephone: str | None = None,
+        override_email: str | None = None,
+        override_cni: str | None = None,
+        override_date_naissance: date | None = None,
+        override_lieu_naissance: str | None = None,
+        override_adresse: str | None = None,
     ) -> KoparPaiementInitie:
         adhesion = await self.adhesions.get_by_id(adhesion_id)
         if not adhesion:
@@ -144,29 +152,107 @@ class PaiementOrchestratorService:
             raise HTTPException(
                 status_code=400, detail="Montant adhésion invalide sur l'adhésion"
             )
+
+        prenom = (override_prenom or adhesion.prenom or "").strip() or adhesion.prenom
+        nom = (override_nom or adhesion.nom or "").strip() or adhesion.nom
+        telephone = (override_telephone or adhesion.tel_mobile or "").strip() or adhesion.tel_mobile
+        email = (override_email or adhesion.email or "").strip() or adhesion.email
+        cni = (override_cni or getattr(adhesion, "cni", None) or "").strip() or None
+        date_naissance = override_date_naissance or getattr(adhesion, "date_naissance", None)
+        lieu_naissance = (
+            (override_lieu_naissance or getattr(adhesion, "lieu_naissance", None) or "").strip()
+            or None
+        )
+        adresse = (
+            (override_adresse or getattr(adhesion, "adresse", None) or "").strip()
+            or None
+        )
+        country_code = "SN" if not adhesion.est_diaspora else "SN"
+
         command_ref = f"ADH-{str(adhesion_id)}"
         command_name = "Adhésion MONCAP"
         ipn_url, success_url, cancel_url = self._build_urls(
             type_tx="adhesion", adhesion_id=adhesion_id, cotisation_id=None
         )
-        payload = dict(
-            itemPrice=adhesion.montant_adhesion,
-            commandName=command_name,
-            commandRef=command_ref,
-            ipnUrl=ipn_url,
-            successUrl=success_url,
-            cancelUrl=cancel_url,
-            firstName=adhesion.prenom,
-            lastName=adhesion.nom,
-            email=adhesion.email,
-            phoneNumber=adhesion.tel_mobile,
-            countryCode="SN" if not adhesion.est_diaspora else (adhesion.pays_domicile_id and "SN" or "SN"),
+        custom_fields = {"adhesion_id": str(adhesion_id), "type": "adhesion"}
+        initie = await self.kopar.creer_transaction(
+            item_price=adhesion.montant_adhesion,
+            command_name=command_name,
+            command_ref=command_ref,
+            ipn_url=ipn_url,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            first_name=prenom,
+            last_name=nom,
+            email=email,
+            phone_number=telephone,
+            country_code=country_code,
             currency="XOF",
-            customFields={"adhesion_id": str(adhesion_id), "type": "adhesion"},
+            custom_fields=custom_fields,
+            document_number=cni,
+            document_type="CNI",
+            birth_date=date_naissance,
+            birth_place=lieu_naissance or "",
+            city="",
+            address=adresse or "",
+            service_paiement=service,
         )
-        initie = await self.kopar.creer_transaction(**payload)
-        if service:
-            initie = await self.kopar.checkout(initie.token, service)
+        service_effectif = service or "kopar_services_cross"
+        mapping_bank = {
+            "wave_checkout": "wave",
+            "orange_money_sn": "orange_money",
+            "wave_checkout_ci": "wave",
+            "kopar_services_cross": "kopar_cross",
+        }
+        payment_method = mapping_bank.get(service_effectif, service_effectif)
+        user_kyc_camel = {
+            "firstName": prenom,
+            "lastName": nom,
+            "phoneNumber": telephone,
+            "email": email,
+            "documentNumber": cni,
+            "documentType": "CNI" if cni else "",
+            "birthDate": date_naissance.isoformat() if date_naissance else "",
+            "birthPlace": lieu_naissance or "",
+            "country": country_code,
+            "city": "",
+            "address": adresse or "",
+        }
+        bank_details_camel = {
+            "paymentMethod": payment_method,
+            "phone": telephone or "",
+            "country": country_code or "SN",
+            "currency": "XOF",
+            "serviceId": service_effectif,
+        }
+        services_requierent_checkout = {"wave_checkout", "orange_money_sn", "wave_checkout_ci"}
+        if service and service in services_requierent_checkout:
+            initie = await self.kopar.checkout(
+                initie.token,
+                service,
+                user_kyc=user_kyc_camel,
+                bank_details=bank_details_camel,
+                country_code=country_code,
+                currency="XOF",
+                phone_number=telephone,
+            )
+        raw_request_camel = {
+            "itemPrice": adhesion.montant_adhesion,
+            "commandName": command_name,
+            "commandRef": command_ref,
+            "ipnUrl": ipn_url,
+            "successUrl": success_url,
+            "cancelUrl": cancel_url,
+            "firstName": prenom,
+            "lastName": nom,
+            "email": email,
+            "phoneNumber": telephone,
+            "countryCode": country_code,
+            "currency": "XOF",
+            "customFields": custom_fields,
+            "userKyc": user_kyc_camel,
+            "bankDetails": bank_details_camel,
+        }
         await self._creer_transaction_db(
             type_tx=TypeTransactionKopar.adhesion,
             adhesion_id=adhesion_id,
@@ -175,16 +261,16 @@ class PaiementOrchestratorService:
             command_name=command_name,
             montant=adhesion.montant_adhesion,
             kopar_token=initie.token,
-            raw_request=payload,
+            raw_request=raw_request_camel,
             raw_response=initie.provider_response or {"token": initie.token},
-            customer_first_name=adhesion.prenom,
-            customer_last_name=adhesion.nom,
-            customer_email=adhesion.email,
-            customer_phone=adhesion.tel_mobile,
+            customer_first_name=prenom,
+            customer_last_name=nom,
+            customer_email=email,
+            customer_phone=telephone,
             ipn_url=ipn_url,
             success_url=success_url,
             cancel_url=cancel_url,
-            custom_fields={"adhesion_id": str(adhesion_id), "type": "adhesion"},
+            custom_fields=custom_fields,
         )
         return initie
 
@@ -209,30 +295,98 @@ class PaiementOrchestratorService:
         ipn_url, success_url, cancel_url = self._build_urls(
             type_tx="cotisation", adhesion_id=c.adhesion_id, cotisation_id=c.id
         )
-        payload = dict(
-            itemPrice=c.montant,
-            commandName=command_name,
-            commandRef=command_ref,
-            ipnUrl=ipn_url,
-            successUrl=success_url,
-            cancelUrl=cancel_url,
-            firstName=adhesion.prenom,
-            lastName=adhesion.nom,
+        custom_fields = {
+            "cotisation_id": str(c.id),
+            "adhesion_id": str(c.adhesion_id),
+            "annee": c.annee,
+            "mois": c.mois,
+            "type": "cotisation",
+        }
+        cni_cot = getattr(adhesion, "cni", None) or ""
+        ddn_cot = getattr(adhesion, "date_naissance", None)
+        lieun_cot = getattr(adhesion, "lieu_naissance", None) or ""
+        addr_cot = getattr(adhesion, "adresse", None) or ""
+        country_code_cot = "SN" if not adhesion.est_diaspora else "SN"
+        service_eff_cot = service or "kopar_services_cross"
+        mapping_cot_bank = {
+            "wave_checkout": "wave",
+            "orange_money_sn": "orange_money",
+            "wave_checkout_ci": "wave",
+            "kopar_services_cross": "kopar_cross",
+        }
+        pay_method_cot = mapping_cot_bank.get(service_eff_cot, service_eff_cot)
+        user_kyc_cot_before = {
+            "firstName": adhesion.prenom,
+            "lastName": adhesion.nom,
+            "phoneNumber": adhesion.tel_mobile,
+            "email": adhesion.email,
+            "documentNumber": cni_cot,
+            "documentType": "CNI" if cni_cot else "",
+            "birthDate": ddn_cot.isoformat() if ddn_cot else "",
+            "birthPlace": lieun_cot or "",
+            "country": country_code_cot,
+            "city": "",
+            "address": addr_cot or "",
+        }
+        bank_details_cot_before = {
+            "paymentMethod": pay_method_cot,
+            "phone": adhesion.tel_mobile or "",
+            "country": country_code_cot or "SN",
+            "currency": c.devise or "XOF",
+            "serviceId": service_eff_cot,
+        }
+        initie = await self.kopar.creer_transaction(
+            item_price=c.montant,
+            command_name=command_name,
+            command_ref=command_ref,
+            ipn_url=ipn_url,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            first_name=adhesion.prenom,
+            last_name=adhesion.nom,
             email=adhesion.email,
-            phoneNumber=adhesion.tel_mobile,
-            countryCode="SN" if not adhesion.est_diaspora else "SN",
+            phone_number=adhesion.tel_mobile,
+            country_code=country_code_cot,
             currency=c.devise or "XOF",
-            customFields={
-                "cotisation_id": str(c.id),
-                "adhesion_id": str(c.adhesion_id),
-                "annee": c.annee,
-                "mois": c.mois,
-                "type": "cotisation",
-            },
+            custom_fields=custom_fields,
+            document_number=cni_cot or None,
+            document_type="CNI",
+            birth_date=ddn_cot,
+            birth_place=lieun_cot or "",
+            city="",
+            address=addr_cot or "",
+            service_paiement=service,
         )
-        initie = await self.kopar.creer_transaction(**payload)
-        if service:
-            initie = await self.kopar.checkout(initie.token, service)
+        services_requierent_checkout_cot = {"wave_checkout", "orange_money_sn", "wave_checkout_ci"}
+        if service and service in services_requierent_checkout_cot:
+            initie = await self.kopar.checkout(
+                initie.token,
+                service,
+                user_kyc=user_kyc_cot_before,
+                bank_details=bank_details_cot_before,
+                country_code=country_code_cot,
+                currency=c.devise or "XOF",
+                phone_number=adhesion.tel_mobile,
+            )
+        user_kyc_cot = user_kyc_cot_before
+        bank_details_cot = bank_details_cot_before
+        raw_request_camel = {
+            "itemPrice": c.montant,
+            "commandName": command_name,
+            "commandRef": command_ref,
+            "ipnUrl": ipn_url,
+            "successUrl": success_url,
+            "cancelUrl": cancel_url,
+            "firstName": adhesion.prenom,
+            "lastName": adhesion.nom,
+            "email": adhesion.email,
+            "phoneNumber": adhesion.tel_mobile,
+            "countryCode": "SN" if not adhesion.est_diaspora else "SN",
+            "currency": c.devise or "XOF",
+            "customFields": custom_fields,
+            "userKyc": user_kyc_cot,
+            "bankDetails": bank_details_cot,
+        }
         await self._creer_transaction_db(
             type_tx=TypeTransactionKopar.cotisation,
             adhesion_id=c.adhesion_id,
@@ -241,7 +395,7 @@ class PaiementOrchestratorService:
             command_name=command_name,
             montant=c.montant,
             kopar_token=initie.token,
-            raw_request=payload,
+            raw_request=raw_request_camel,
             raw_response=initie.provider_response or {"token": initie.token},
             customer_first_name=adhesion.prenom,
             customer_last_name=adhesion.nom,
@@ -250,7 +404,7 @@ class PaiementOrchestratorService:
             ipn_url=ipn_url,
             success_url=success_url,
             cancel_url=cancel_url,
-            custom_fields=payload["customFields"],
+            custom_fields=custom_fields,
         )
         return initie
 

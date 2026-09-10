@@ -12,7 +12,6 @@ from app.models.paiements import (
     TypeTransactionKopar,
 )
 
-
 class ParametrePaiementOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -95,6 +94,17 @@ class CotisationDetailListResponse(BaseModel):
 class PaiementManuelRequest(BaseModel):
     note: str | None = None
     reference_paiement: str | None = Field(default=None, alias="referencePaiement")
+
+
+class InitPaiementAdhesionPublicRequest(BaseModel):
+    email: str
+    prenom: str | None = None
+    nom: str | None = None
+    telephone: str | None = None
+    cni: str | None = None
+    date_naissance: date | None = Field(default=None, alias="dateNaissance")
+    lieu_naissance: str | None = Field(default=None, alias="lieuNaissance")
+    service_paiement: str | None = Field(default=None, alias="servicePaiement")
 
 
 class InitPaiementResponse(BaseModel):

@@ -4,7 +4,7 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Request, Query
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from app.schemas.paiements import (
     CotisationListResponse,
     CotisationMensuelleOut,
     CotisationStatut as PydanticCotisationStatut,
+    InitPaiementAdhesionPublicRequest,
     InitPaiementResponse,
     ParametrePaiementCreate,
     ParametrePaiementOut,
@@ -93,7 +94,6 @@ async def etat_cotisation_publique(
     adh: uuid.UUID = Query(..., alias="adh", description="UUID de l'adhésion"),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.repositories.adhesions import AdhesionRepository
     adhesion = await AdhesionRepository(db).get_by_id(adh)
     if not adhesion:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
@@ -169,6 +169,64 @@ async def etat_cotisation_publique(
     }
 
 
+@public_router.post(
+    "/adhesion/{adhesion_id}/initier-public",
+    response_model=InitPaiementResponse,
+    summary="(Public) Initier le paiement Kopar des frais d'adhésion (sans JWT, après soumission du formulaire /adhesion)",
+    description="Endpoint public dédié au parcours 'Nouvelle adhésion → Paiement immédiat'. L'utilisateur n'a pas encore de compte JWT. Vérification par email.",
+)
+async def initier_paiement_adhesion_public(
+    adhesion_id: uuid.UUID,
+    body: InitPaiementAdhesionPublicRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    adhesion_repo = AdhesionRepository(db)
+    adhesion = await adhesion_repo.get_by_id(adhesion_id)
+    if not adhesion:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
+
+    email_saisi = (body.email or "").strip().lower()
+    email_stocke = (adhesion.email or "").strip().lower()
+    if not email_saisi or email_stocke != email_saisi:
+        raise HTTPException(
+            status_code=403,
+            detail="L'email fourni ne correspond pas à cette adhésion",
+        )
+
+    if adhesion.montant_adhesion is None or adhesion.montant_adhesion <= 0:
+        adhesion.montant_adhesion = 25000
+
+    orchestrator = PaiementOrchestratorService(db)
+    try:
+        initie = await orchestrator.initier_paiement_adhesion(
+            adhesion_id,
+            service=body.service_paiement,
+            force=False,
+            override_prenom=body.prenom,
+            override_nom=body.nom,
+            override_telephone=body.telephone,
+            override_email=body.email,
+            override_cni=body.cni,
+            override_date_naissance=body.date_naissance,
+            override_lieu_naissance=body.lieu_naissance,
+        )
+    except KoparError as e:
+        detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
+        if e.details is not None:
+            detail["detailsBrutsKopar"] = e.details
+            detail["details"] = e.details
+        raise HTTPException(status_code=e.status_code, detail=detail)
+
+    await db.commit()
+    return {
+        "koparToken": initie.token,
+        "paymentUrl": initie.payment_url,
+        "qrCode": initie.qr_code,
+        "montant": initie.montant,
+        "devise": initie.devise,
+    }
+
+
 # =========================================================================
 # ENDPOINTS PROTÉGÉS : Initier paiement adhésion / cotisation
 # =========================================================================
@@ -191,7 +249,11 @@ async def initier_paiement_adhesion(
             adhesion_id, service=service, force=force
         )
     except KoparError as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": "KOPAR_ERROR", "message": e.message})
+        detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
+        if e.details is not None:
+            detail["detailsBrutsKopar"] = e.details
+            detail["details"] = e.details
+        raise HTTPException(status_code=e.status_code, detail=detail)
     await db.commit()
     return {
         "koparToken": initie.token,
@@ -220,7 +282,10 @@ async def initier_paiement_cotisation(
             cotisation_id, service=service, force=force
         )
     except KoparError as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": "KOPAR_ERROR", "message": e.message})
+        detail = {"code": "KOPAR_ERROR", "message": e.message}
+        if e.details is not None:
+            detail["detailsBrutsKopar"] = e.details
+        raise HTTPException(status_code=e.status_code, detail=detail)
     await db.commit()
     return {
         "koparToken": initie.token,
