@@ -20,6 +20,7 @@ from app.models.paiements import (
 from app.models.user import User
 from app.repositories.users import UserRepository
 from app.repositories.adhesions import AdhesionRepository
+from app.repositories.paiements import CotisationMensuelleRepository
 from app.schemas.paiements import (
     CotisationDetailListResponse,
     CotisationDetailOut,
@@ -102,6 +103,9 @@ async def etat_cotisation_publique(
             status_code=409,
             detail=f"Adhésion non validée (statut actuel: {adhesion.statut})",
         )
+    paiement_adhesion_confirme = (
+        adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0)
+    ) or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
     cotisations_service = CotisationsService(db)
     qr = QRCodeStorageService()
     _, qr_abs_url = qr.generer_qr_adherent(adhesion.id)
@@ -112,6 +116,21 @@ async def etat_cotisation_publique(
             adhesion.id, today.year, today.month
         )
         await db.commit()
+    try:
+        params_svc = ParametresPaiementService(db)
+        montant_reference = await params_svc.get_montant(
+            ParametrePaiementCode.cotisation_mensuelle, date.today()
+        )
+        if montant_reference and montant_reference > 0:
+            if (
+                cotisation_courante.montant is None
+                or cotisation_courante.montant <= 0
+                or abs(cotisation_courante.montant - montant_reference) > 1
+            ):
+                cotisation_courante.montant = montant_reference
+    except Exception:
+        if cotisation_courante.montant is None or cotisation_courante.montant <= 0:
+            cotisation_courante.montant = 5
     historique = await cotisations_service.historique_adherent(adhesion.id, 24)
     annee_courante = date.today().year
     montant_annuel_paye = sum(
@@ -133,7 +152,9 @@ async def etat_cotisation_publique(
             "nom": adhesion.nom,
             "prenom": adhesion.prenom,
             "email": adhesion.email,
-            "commissariat": adhesion.commissariat,
+            "telephone": getattr(adhesion, "tel_mobile", None),
+            "commissariat": getattr(adhesion, "commissariat", None),
+            "paiementAdhesionConfirme": paiement_adhesion_confirme,
             "qrUrl": qr_abs_url,
             "montantDu": montant_du,
             "montantAnnuelPaye": montant_annuel_paye,
@@ -166,6 +187,67 @@ async def etat_cotisation_publique(
                 for c in historique
             ],
         }
+    }
+
+
+@public_router.post(
+    "/cotisation/{cotisation_id}/initier-public",
+    response_model=InitPaiementResponse,
+    summary="(Public) Initier paiement Kopar d'une cotisation mensuelle (scan QR sans JWT)",
+    description="Dédié au parcours scan QR Code permanent. Sans JWT, vérification par email. L'adhérent·e fournit l'email lié à son adhésion pour confirmer son identité.",
+)
+async def initier_paiement_cotisation_public(
+    cotisation_id: uuid.UUID,
+    body: InitPaiementAdhesionPublicRequest = Body(...),
+    service: str | None = Query(None, description="Service de paiement (wave_checkout, orange_money_sn, kopar_services_cross...)"),
+    db: AsyncSession = Depends(get_db),
+):
+    cot_repo = CotisationMensuelleRepository(db)
+    c = await cot_repo.get_by_id(cotisation_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Cotisation introuvable")
+    adhesion_repo = AdhesionRepository(db)
+    adhesion = await adhesion_repo.get_by_id(c.adhesion_id)
+    if not adhesion:
+        raise HTTPException(status_code=404, detail="Adhérent introuvable")
+    if adhesion.statut != AdhesionStatus.validee:
+        raise HTTPException(status_code=409, detail="Adhésion non validée")
+    email_saisi = (body.email or "").strip().lower()
+    email_stocke = (adhesion.email or "").strip().lower()
+    if not email_saisi or email_stocke != email_saisi:
+        raise HTTPException(
+            status_code=403,
+            detail="L'email fourni ne correspond pas à cette adhésion",
+        )
+    try:
+        params_svc = ParametresPaiementService(db)
+        montant_reference = await params_svc.get_montant(
+            ParametrePaiementCode.cotisation_mensuelle, date.today()
+        )
+        if montant_reference and montant_reference > 0:
+            if c.montant is None or abs(c.montant - montant_reference) > 1:
+                c.montant = montant_reference
+    except Exception:
+        if c.montant is None or c.montant <= 0:
+            c.montant = 5
+    orchestrator = PaiementOrchestratorService(db)
+    try:
+        initie = await orchestrator.initier_paiement_cotisation(
+            cotisation_id, service=service, force=False
+        )
+    except KoparError as e:
+        detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
+        if e.details is not None:
+            detail["detailsBrutsKopar"] = e.details
+            detail["details"] = e.details
+        raise HTTPException(status_code=e.status_code, detail=detail)
+    await db.commit()
+    return {
+        "koparToken": initie.token,
+        "paymentUrl": initie.payment_url,
+        "qrCode": initie.qr_code,
+        "montant": initie.montant,
+        "devise": initie.devise,
     }
 
 
@@ -442,11 +524,29 @@ async def ma_cotisation_mois(
         today = date.today()
         cc = await service.creer_cotisation(adhesion.id, today.year, today.month)
         await db.commit()
+    try:
+        params_svc = ParametresPaiementService(db)
+        montant_reference = await params_svc.get_montant(
+            ParametrePaiementCode.cotisation_mensuelle, date.today()
+        )
+        if montant_reference and montant_reference > 0:
+            if (
+                cc.montant is None
+                or cc.montant <= 0
+                or abs(cc.montant - montant_reference) > 1
+            ):
+                cc.montant = montant_reference
+    except Exception:
+        if cc.montant is None or cc.montant <= 0:
+            cc.montant = 5
     historique = await service.historique_adherent(adhesion.id, 24)
     annee = date.today().year
     montant_annuel_paye = sum(c.montant for c in historique if c.annee == annee and c.statut == CotisationStatut.payee)
     mois_payes = sum(1 for c in historique if c.annee == annee and c.statut == CotisationStatut.payee)
     montant_du = cc.montant if cc and cc.statut != CotisationStatut.payee else 0
+    paiement_adhesion_confirme = (
+        adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0)
+    ) or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
     return {
         "adhesionId": adhesion.id,
         "nom": adhesion.nom,
@@ -456,6 +556,7 @@ async def ma_cotisation_mois(
         "montantDu": montant_du,
         "montantAnnuelPaye": montant_annuel_paye,
         "moisPayesAnnee": mois_payes,
+        "paiementAdhesionConfirme": paiement_adhesion_confirme,
     }
 
 

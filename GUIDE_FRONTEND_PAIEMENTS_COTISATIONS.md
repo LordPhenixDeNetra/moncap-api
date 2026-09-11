@@ -127,11 +127,42 @@ L'utilisateur·ice paie sur Kopar
      rediriger vers ?redirect_url=https://tonfront/paiement/retour
 ```
 
-#### 2.4 POST `/paiements/cotisation/{cotisation_id}/initier`
-**Identique à 2.3 mais pour une cotisation mensuelle**.
+#### 2.4 POST `/paiements/cotisation/{cotisation_id}/initier **(PROTÉGÉ JWT)**
+**Identique à 2.3 mais pour une cotisation mensuelle — utilisateur·ice CONNECTÉ·E (JWT)**.
 
 - Utilise `cotisationCourante.id` de la réponse de `/cotisation/etat`.
 - Même flux : `paymentUrl` → redirection → webhook → marquée payée.
+- **⚠️ Ce point IMPORTANT : Ce endpoint est seulement pour l'ESPACE MEMBRE CONNECTÉ (avec JWT). Pour le parcours QR SCAN (sans token), il FAUT utiliser **2.4bis** juste en dessous !
+
+#### 2.4bis POST `/paiements/cotisation/{cotisation_id}/initier-public` **(PUBLIC — QR Scan QR — SANS JWT)**
+**✅ **POINT D'ENTRÉE PRINCIPAL POUR LE PARCOURS SCAN QR CODE `/payer-cotisation`.
+
+- **Sans JWT** : Vérification d'identité par email (user saisit email lié à l'adhésion).
+- **Sécurité** : compare `body.email` (trimé insensible à la casse) vs `adhesions.email` → 403 si mismatch.
+- **Montant** : Lit systématiquement la référence DB `ParametresPaiementService.get_montant(cotisation_mensuelle, today)` et met à jour la ligne cotisation.montant (audit Figé), **même principe que initier-public adhésion.
+
+**Body JSON** (alias camelCase ou snake_case acceptés (populate_by_name=True):
+```jsonc
+{
+  "email": "mbe@example.com",        // OBLIGATOIRE, correspond à adhesions.email
+  "prenom": "Moustapha",                // optionnel override KYC (si renseigné)
+  "nom": "Diagne",                     // optionnel
+  "telephone": "+221770000000,         // optionnel
+  "cni": "12345678",                // optionnel
+  "dateNaissance": "1990-05-15",   // optionnel
+  "lieuNaissance": "Dakar"             // optionnel
+  "servicePaiement": "kopar_services_cross"   // optionnel (default: wave_checkout, orange_money_sn, kopar_services_cross)
+}
+```
+
+**Query optionnel** : `?service=wave_checkout` (force un service specifique).
+
+**Frontend QR Scan** : Utilisesur `/payer-cotisation?adh=UUID après avoir demandé à l'user son email → POST `/cotisation/` **public`/payer-cotisation` page 👇👇:
+```ts
+POST /api/v1/paiements/cotisation/<cotisationCourante.id>/initier-public?service=kopar_services_cross
+{ "email": "user@example.com" }
+```
+→ Redirection `paymentUrl` (Kopar) → Webhook marquée payée.
 
 ---
 
@@ -281,24 +312,40 @@ async function loadEtat(adhesionId: string) {
   return r.json();
 }
 ```
-Vérifie **d'abord** `paiementAdhesionConfirme` : si `false` → proposer **d'abord** le paiement d'adhésion (car les cotisations ne seront pas dues avant paiement adhésion).
+Vérifie **d'abord** `data.paiementAdhesionConfirme` : si `false` → proposer **d'abord** le paiement d'adhésion (car les cotisations ne seront pas dues avant paiement adhésion).
+→ Tu peux aussi charger **ET AFFICHER le tarif référentiel DB** via `GET /paiements/parametres-public` pour l'afficher DÈS LE DÉBUT (montant = cotisation_mensuelle.montantFcfa).
 
-### Étape 3 : Au clic "Payer"
+### Étape 3 : Au clic "Payer" (PARCOURS SANS JWT — QR SCAN TELEPHONE)
+**⚠️ Important : Quand l'user SCANNE le QR depuis son téléphone, il N'A PAS de JWT actif ! Il FAUT utiliser le endpoint **PUBLIC `initier-public` (vérif email), PAS le protégé `/cotisation/{id}/initier` (401 garanti sans token).**
+
 ```tsx
-async function onPayerCotisation(cotisationId: string, token: string) {
-  const r = await fetch(
-    `${PUBLIC_API_URL}/api/v1/paiements/cotisation/${cotisationId}/initier`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
+// Étape 3a : Demande email (vérif identité) avant paiement
+const [email, setEmail] = useState(""); // input controlé — adhérent saisit son email
+
+// Étape 3b : Au clic Payer — POST INITIER-PUBLIC (PAS de JWT !)
+async function onPayerCotisationPublic(cotisationId: string, email: string, servicePaiement?: string) {
+  const url = new URL(`${PUBLIC_API_URL}/api/v1/paiements/cotisation/${cotisationId}/initier-public`);
+  if (servicePaiement) {
+    url.searchParams.set("service", servicePaiement); // default = kopar_services_cross (page standard : Wave / OM / Carte)
+  }
+  const r = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: email.trim(),  // OBLIGATOIRE — backend vérifie vs adhesions.email (403 si non correspondant)
+      prenom: prenomFromEtat,      // optionnel
+      nom: nomFromEtat,            // optionnel
+      telephone: telephoneFromEtat,// optionnel
+    }),
+  });
   const data = await r.json();
-  if (data.error) throw new Error(data.error);
+  if (!r.ok) throw new Error(data.detail?.message || data.message || "Erreur init paiement");
   // 🔑 Redirection vers Kopar :
   window.location.href = data.paymentUrl;
 }
 ```
+
+**Alternative : Si l'user est DÉJÀ connecté en JWT (espace membre), tu peux utiliser le endpoint protégé POST `/cotisation/{id}/initier` (avec Bearer token) — mais il est RECOMMANDÉ d'utiliser systématiquement initier-public depuis la page `/payer-cotisation` scan QR — elle fonctionne dans TOUS les cas (JWT ou non).
 
 ### Étape 4 : Kopar retourne vers ton frontend (page de succès)
 Configure côté **dashboard marchand Kopar** le `redirect_url` pour que Kopar renvoie vers :

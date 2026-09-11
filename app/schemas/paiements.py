@@ -156,3 +156,4 @@ class AdherentEtatCotisationOut(BaseModel):
     montant_du: int = Field(default=0, alias="montantDu")
     montant_annuel_paye: int = Field(default=0, alias="montantAnnuelPaye")
     mois_payes_annee: int = Field(default=0, alias="moisPayesAnnee")
+    paiement_adhesion_confirme: bool = Field(default=False, alias="paiementAdhesionConfirme")
