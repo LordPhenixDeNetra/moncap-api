@@ -251,6 +251,95 @@ async def initier_paiement_cotisation_public(
     }
 
 
+@public_router.post(
+    "/adhesion/{adhesion_id}/cotisation-du-mois/initier-public",
+    response_model=InitPaiementResponse,
+    summary="(Public) Payer la cotisation DU MOIS SANS QR Code — juste via UUID adhésion + email",
+    description="Alternative au scan QR : adhérent·e fournit son UUID adhésion (lien reçu par email ou tapé) + son email. Backend récupère (ou crée) la cotisation du mois en cours et initie le paiement Kopar. Sans JWT, vérification par email.",
+)
+async def initier_paiement_cotisation_du_mois_public_par_adhesion(
+    adhesion_id: uuid.UUID,
+    body: InitPaiementAdhesionPublicRequest = Body(...),
+    service: str | None = Query(None, description="Service de paiement (wave_checkout, orange_money_sn, kopar_services_cross...)"),
+    db: AsyncSession = Depends(get_db),
+):
+    adhesion_repo = AdhesionRepository(db)
+    adhesion = await adhesion_repo.get_by_id(adhesion_id)
+    if not adhesion:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
+    if adhesion.statut != AdhesionStatus.validee:
+        raise HTTPException(status_code=409, detail=f"Adhésion non validée (statut actuel: {adhesion.statut})")
+    email_saisi = (body.email or "").strip().lower()
+    email_stocke = (adhesion.email or "").strip().lower()
+    if not email_saisi or email_stocke != email_saisi:
+        raise HTTPException(status_code=403, detail="L'email fourni ne correspond pas à cette adhésion")
+    paiement_adhesion_confirme = (
+        adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0)
+    ) or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
+    if not paiement_adhesion_confirme:
+        raise HTTPException(
+            status_code=409,
+            detail="Paiement adhésion initiale non confirmé. Veuillez d'abord payer les frais d'adhésion avant de payer une cotisation mensuelle."
+        )
+    cotisations_service = CotisationsService(db)
+    cc = await cotisations_service.get_cotisation_courante(adhesion.id)
+    if cc is None:
+        today = date.today()
+        cc = await cotisations_service.creer_cotisation(adhesion.id, today.year, today.month)
+        await db.commit()
+    try:
+        params_svc = ParametresPaiementService(db)
+        montant_reference = await params_svc.get_montant(
+            ParametrePaiementCode.cotisation_mensuelle, date.today()
+        )
+        if montant_reference and montant_reference > 0:
+            if (
+                cc.montant is None
+                or cc.montant <= 0
+                or abs(cc.montant - montant_reference) > 1
+            ):
+                cc.montant = montant_reference
+    except Exception:
+        if cc.montant is None or cc.montant <= 0:
+            cc.montant = 5
+    orchestrator = PaiementOrchestratorService(db)
+    try:
+        initie = await orchestrator.initier_paiement_cotisation(
+            cc.id, service=service, force=False
+        )
+    except KoparError as e:
+        detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
+        if e.details is not None:
+            detail["detailsBrutsKopar"] = e.details
+            detail["details"] = e.details
+        raise HTTPException(status_code=e.status_code, detail=detail)
+    await db.commit()
+    return {
+        "koparToken": initie.token,
+        "paymentUrl": initie.payment_url,
+        "qrCode": initie.qr_code,
+        "montant": initie.montant,
+        "devise": initie.devise,
+    }
+
+
+@public_router.post(
+    "/cotisation/initier-public-par-adhesion",
+    response_model=InitPaiementResponse,
+    summary="(Public — alias court) Payer la cotisation du mois sans QR : ?adh=<UUID> + email",
+    description="Alias plus court du endpoint /adhesion/{adhesion_id}/cotisation-du-mois/initier-public. Utile pour les navigateurs quand l'adhérent·e tape l'URL à la main ou clique un lien simple dans son email.",
+)
+async def initier_paiement_cotisation_public_par_adhesion_query(
+    adh: uuid.UUID = Query(..., alias="adh", description="UUID de l'adhésion (même paramètre que /cotisation/etat)"),
+    body: InitPaiementAdhesionPublicRequest = Body(...),
+    service: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    return await initier_paiement_cotisation_du_mois_public_par_adhesion(
+        adhesion_id=adh, body=body, service=service, db=db
+    )
+
+
 @public_router.get(
     "/parametres-public",
     response_model=ParametresPaiementListResponse,

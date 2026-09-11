@@ -134,35 +134,93 @@ L'utilisateur·ice paie sur Kopar
 - Même flux : `paymentUrl` → redirection → webhook → marquée payée.
 - **⚠️ Ce point IMPORTANT : Ce endpoint est seulement pour l'ESPACE MEMBRE CONNECTÉ (avec JWT). Pour le parcours QR SCAN (sans token), il FAUT utiliser **2.4bis** juste en dessous !
 
-#### 2.4bis POST `/paiements/cotisation/{cotisation_id}/initier-public` **(PUBLIC — QR Scan QR — SANS JWT)**
-**✅ **POINT D'ENTRÉE PRINCIPAL POUR LE PARCOURS SCAN QR CODE `/payer-cotisation`.
+#### 2.4bis POST `/paiements/cotisation/{cotisation_id}/initier-public` **(PUBLIC — QR Scan — SANS JWT)**
+**✅ Point d'entrée principal pour le parcours SCAN QR CODE `/payer-cotisation`.**
 
 - **Sans JWT** : Vérification d'identité par email (user saisit email lié à l'adhésion).
 - **Sécurité** : compare `body.email` (trimé insensible à la casse) vs `adhesions.email` → 403 si mismatch.
-- **Montant** : Lit systématiquement la référence DB `ParametresPaiementService.get_montant(cotisation_mensuelle, today)` et met à jour la ligne cotisation.montant (audit Figé), **même principe que initier-public adhésion.
+- **Montant** : Lit systématiquement la référence DB `ParametresPaiementService.get_montant(cotisation_mensuelle, today)` et met à jour la ligne `cotisation.montant` (audit figé), **même principe que `initier-public` adhésion.**
+- **⚠️ Nécessite de connaître `cotisationCourante.id`** → récupéré depuis `/cotisation/etat?adh=UUID`.
 
-**Body JSON** (alias camelCase ou snake_case acceptés (populate_by_name=True):
+**Body JSON** (alias camelCase ou snake_case acceptés via `populate_by_name=True`):
 ```jsonc
 {
-  "email": "mbe@example.com",        // OBLIGATOIRE, correspond à adhesions.email
-  "prenom": "Moustapha",                // optionnel override KYC (si renseigné)
-  "nom": "Diagne",                     // optionnel
-  "telephone": "+221770000000,         // optionnel
-  "cni": "12345678",                // optionnel
-  "dateNaissance": "1990-05-15",   // optionnel
-  "lieuNaissance": "Dakar"             // optionnel
-  "servicePaiement": "kopar_services_cross"   // optionnel (default: wave_checkout, orange_money_sn, kopar_services_cross)
+  "email": "mbe@example.com",           // OBLIGATOIRE — correspond à adhesions.email
+  "prenom": "Moustapha",               // optionnel override KYC
+  "nom": "Diagne",                      // optionnel
+  "telephone": "+221770000000",         // optionnel
+  "cni": "12345678",                    // optionnel
+  "dateNaissance": "1990-05-15",        // optionnel
+  "lieuNaissance": "Dakar",             // optionnel
+  "servicePaiement": "kopar_services_cross"  // optionnel
 }
 ```
 
-**Query optionnel** : `?service=wave_checkout` (force un service specifique).
+**Query optionnelle** : `?service=wave_checkout` (force un service spécifique — default = `kopar_services_cross`).
 
-**Frontend QR Scan** : Utilisesur `/payer-cotisation?adh=UUID après avoir demandé à l'user son email → POST `/cotisation/` **public`/payer-cotisation` page 👇👇:
+**Frontend QR Scan** : Depuis `/payer-cotisation?adh=UUID` après `/cotisation/etat` :
 ```ts
 POST /api/v1/paiements/cotisation/<cotisationCourante.id>/initier-public?service=kopar_services_cross
 { "email": "user@example.com" }
 ```
 → Redirection `paymentUrl` (Kopar) → Webhook marquée payée.
+
+---
+
+#### 2.4ter 🔥 POST `/paiements/adhesion/{adhesion_id}/cotisation-du-mois/initier-public` (PUBLIC — SANS QR — SANS JWT)
+#### **ET alias court** 🔥 POST `/paiements/cotisation/initier-public-par-adhesion?adh=<UUID_ADH>`
+
+**✅ **NOUVEAU — PARCOURS ALTERNATIF SANS QR CODE (LIEN DIRECT PAR EMAIL / TAPÉ À LA MAIN)**  
+Parfait quand :
+- L'adhérent·e **n'a pas son QR Code** sous la main,
+- Il/elle clique **directement sur un lien dans l'email de relance**,
+- Ou il/elle tape simplement l'URL dans son navigateur (avec `?adh=UUID`).
+
+**Différence avec 2.4bis** :
+- 2.4bis = besoin de **`cotisation_id`** (obtenu après `/cotisation/etat`).
+- 2.4ter = besoin **uniquement de `adhesion_id`** (UUID de l'adhésion). **Backend retrouve TOUT SEUL la cotisation du mois** (ou la crée si elle n'existe pas encore !).
+- Mêmes protections que 2.4bis : vérif email + `paiementAdhesionConfirme=true` → sinon **409 explicite "payer d'abord l'adhésion"**.
+- Même lecture référence DB montant `cotisation_mensuelle` (5 FCFA phase test) + fallback 5 si DB plante.
+
+**Cas d'usage typique** : Email de relance début mois contient directement :
+> 💡 **"Cliquez ici pour payer votre cotisation sans QR Code"**
+> → Lien = `https://mon-frontend.sn/payer-cotisation?adh=UUID_OUVERTURE`  
+> → Puis front appelle directement le POST 2.4ter **sans même devoir appeler `/cotisation/etat` avant !**
+
+**Signature (long)** :
+```http
+POST /api/v1/paiements/adhesion/28c3d1b2-5b1c-4f3b-9c0f/cotisation-du-mois/initier-public
+Content-Type: application/json
+Query: ?service=kopar_services_cross
+Body: { "email": "moustapha@example.com" }
+```
+
+**Signature (courte, alias — RECOMMANDÉ pour les URLs emails) :**
+```http
+POST /api/v1/paiements/cotisation/initier-public-par-adhesion?adh=28c3d1b2-5b1c-4f3b-9c0f&service=kopar_services_cross
+Content-Type: application/json
+Body: { "email": "moustapha@example.com" }
+```
+
+→ Réponse **identique** : `{koparToken, paymentUrl, montant: 5, devise: "XOF"}`.
+
+**Frontend exemple (payer-cotisation.tsx quand user clique lien depuis email) :**
+```tsx
+// 👉 Si ?adh= existe et ?cotisation_id n'existe PAS → on peut directement utiliser initier-public-par-adhesion (SIMPLE !)
+async function onPayerSansQR(adhesionId: string, email: string, service?: string) {
+  const url = new URL(`${PUBLIC_API_URL}/api/v1/paiements/cotisation/initier-public-par-adhesion`);
+  url.searchParams.set("adh", adhesionId);
+  if (service) url.searchParams.set("service", service);
+  const r = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: email.trim() })
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail?.message || "Erreur");
+  window.location.href = data.paymentUrl; // 💸 Redirection Kopar
+}
+```
 
 ---
 
