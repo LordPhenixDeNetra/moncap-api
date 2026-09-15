@@ -171,16 +171,17 @@ class AdherentEtatCotisationCouranteOut(BaseModel):
 
 
 class AdherentEtatCotisationFlatOut(BaseModel):
-    """Format SANS wrapper {data:}. Pour endpoint /mon-compte/cotisation-du-mois (format historique)."""
+    """Format FLAT sans wrapper {data:}. Contrat frontend /paiements/cotisation/etat et /mon-compte."""
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     adhesion_id: uuid.UUID = Field(alias="adhesionId")
+    adhesion_est_validee: bool = Field(default=False, alias="adhesionEstValidee")
+    paiement_adhesion_confirme: bool = Field(default=False, alias="paiementAdhesionConfirme")
     nom: str | None = None
     prenom: str | None = None
     email: str | None = None
     telephone: str | None = None
     commissariat: str | None = None
-    paiement_adhesion_confirme: bool = Field(default=False, alias="paiementAdhesionConfirme")
     qr_url: str | None = Field(default=None, alias="qrUrl")
     montant_du: int = Field(default=0, alias="montantDu")
     montant_annuel_paye: int = Field(default=0, alias="montantAnnuelPaye")
@@ -188,7 +189,9 @@ class AdherentEtatCotisationFlatOut(BaseModel):
     cotisation_courante: AdherentEtatCotisationCouranteOut | None = Field(
         default=None, alias="cotisationCourante"
     )
-    historique: list[CotisationHistoriqueLightOut] = Field(default_factory=list)
+    historique_24_mois: list[CotisationHistoriqueLightOut] = Field(
+        default_factory=list, alias="historique24Mois"
+    )
 
 
 class AdherentEtatCotisationData(AdherentEtatCotisationFlatOut):
