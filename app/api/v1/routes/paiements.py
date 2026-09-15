@@ -237,10 +237,27 @@ async def initier_paiement_cotisation_public(
         )
     except KoparError as e:
         detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
+        if e.kopar_error_code:
+            detail["koparErrorCode"] = e.kopar_error_code
+            mapped_prefix = {
+                "NO_AUTH": "KOPAR_PSP_NO_AUTH",
+                "INVALID_MERCHANT": "KOPAR_PSP_INVALID_MERCHANT",
+                "INVALID_SERVICE": "KOPAR_PSP_INVALID_SERVICE",
+                "INVALID_AMOUNT": "KOPAR_PSP_INVALID_AMOUNT",
+                "DUPLICATE_ORDER": "KOPAR_PSP_DUPLICATE_ORDER",
+            }.get(str(e.kopar_error_code).upper())
+            if mapped_prefix:
+                detail["code"] = mapped_prefix
+        if e.status_code in (401, 403):
+            http_status = 502
+        elif 500 <= e.status_code <= 501 or e.status_code >= 505:
+            http_status = 502
+        else:
+            http_status = e.status_code
         if e.details is not None:
             detail["detailsBrutsKopar"] = e.details
             detail["details"] = e.details
-        raise HTTPException(status_code=e.status_code, detail=detail)
+        raise HTTPException(status_code=http_status, detail=detail)
     await db.commit()
     return {
         "koparToken": initie.token,

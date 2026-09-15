@@ -27,11 +27,48 @@ KOPAR_SERVICES = {
 
 
 class KoparError(Exception):
-    def __init__(self, message: str, status_code: int = 500, details: Any = None):
+    """Erreur remontée par Kopar Pay PSP (externe).
+
+    CODE HTTP PAR DÉFAUT = 502 Bad Gateway (erreur fournisseur externe).
+    On ne renvoie JAMAIS 401 pour une erreur Kopar → évite l'ambiguïté avec un
+    échec JWT FastAPI côté frontend.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 502,
+        details: Any = None,
+        kopar_error_code: str | None = None,
+    ):
         super().__init__(message)
         self.message = message
+        if status_code == 401:
+            status_code = 502
         self.status_code = status_code
         self.details = details
+        self.kopar_error_code = kopar_error_code
+
+
+def normaliser_status_code_psp(status_code: int) -> int:
+    """Transforme un status HTTP reçu de Kopar en code clair pour le front.
+
+    Règle : TOUT code 4xx/5xx venant de Kopar (sauf erreurs métier explicites)
+    est mappé vers 502 Bad Gateway pour éviter l'ambiguïté 401 JWT FastAPI.
+    """
+    if status_code == 401:
+        return 502
+    if status_code == 403:
+        return 502
+    if 500 <= status_code <= 599:
+        return 502
+    if status_code == 422:
+        return 422
+    if status_code == 400:
+        return 422
+    if 400 <= status_code < 500:
+        return 422
+    return status_code
 
 
 @dataclass(frozen=True)
@@ -123,22 +160,52 @@ class KoparClient:
                 if r.status_code >= 400:
                     msg = data.get("message") or data.get("error") or f"Erreur Kopar HTTP {r.status_code}"
                     err_details = data.get("details") or data.get("errors") or data.get("data") or data
+                    kopar_code = None
+                    if isinstance(err_details, dict):
+                        kopar_code = (
+                            err_details.get("errorCode")
+                            or err_details.get("code")
+                            or err_details.get("error_code")
+                        )
+                    elif isinstance(err_details, list) and err_details:
+                        first = err_details[0]
+                        if isinstance(first, dict):
+                            kopar_code = (
+                                first.get("errorCode")
+                                or first.get("code")
+                                or first.get("error_code")
+                            )
+                    details_avec_meta: dict = {}
+                    if isinstance(err_details, dict):
+                        details_avec_meta = dict(err_details)
+                    elif isinstance(err_details, list):
+                        details_avec_meta = {"errors": err_details}
+                    else:
+                        details_avec_meta = {"raw": err_details}
+                    details_avec_meta["_httpKoparStatusCode"] = r.status_code
+                    details_avec_meta["_errorCodeKopar"] = kopar_code
                     logger.warning(
-                        "Kopar HTTP %s sur %s — message=%s — details bruts kopar=%s — payload envoyé=%s",
+                        "Kopar HTTP %s sur %s — message=%s — koparErrorCode=%s — bruts=%s — payload=%s",
                         r.status_code,
                         url,
                         msg,
+                        kopar_code,
                         err_details,
                         payload,
                     )
-                    raise KoparError(msg, r.status_code, data)
+                    raise KoparError(
+                        msg,
+                        normaliser_status_code_psp(r.status_code),
+                        details_avec_meta,
+                        kopar_error_code=kopar_code,
+                    )
                 return data
         except KoparError:
             raise
         except httpx.TimeoutException as e:
             raise KoparError("Délai Kopar dépassé", 504, str(e))
         except Exception as e:
-            raise KoparError(f"Echec appel Kopar: {e}", 500)
+            raise KoparError(f"Echec appel Kopar: {e}", 502)
 
     async def _get(self, path: str) -> dict:
         if not self.enabled:
@@ -148,25 +215,41 @@ class KoparClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 r = await client.get(url, headers={"Content-Type": "application/json"})
                 if r.status_code >= 500:
-                    raise KoparError(
+                    kopar_err = KoparError(
                         f"Kopar erreur serveur HTTP {r.status_code}",
-                        r.status_code,
-                        r.text[:500],
+                        normaliser_status_code_psp(r.status_code),
+                        {"_httpKoparStatusCode": r.status_code, "raw": r.text[:500]},
                     )
+                    raise kopar_err
                 try:
                     data = r.json()
                 except Exception:
                     data = {"_raw": r.text[:500]}
                 if r.status_code >= 400:
                     msg = data.get("message") or f"Erreur Kopar HTTP {r.status_code}"
-                    raise KoparError(msg, r.status_code, data)
+                    kopar_code = None
+                    if isinstance(data, dict):
+                        kopar_code = (
+                            data.get("errorCode")
+                            or data.get("code")
+                            or data.get("error_code")
+                        )
+                    meta: dict = dict(data) if isinstance(data, dict) else {"raw": data}
+                    meta["_httpKoparStatusCode"] = r.status_code
+                    meta["_errorCodeKopar"] = kopar_code
+                    raise KoparError(
+                        msg,
+                        normaliser_status_code_psp(r.status_code),
+                        meta,
+                        kopar_error_code=kopar_code,
+                    )
                 return data
         except KoparError:
             raise
         except httpx.TimeoutException as e:
             raise KoparError("Délai Kopar dépassé", 504, str(e))
         except Exception as e:
-            raise KoparError(f"Echec appel Kopar: {e}", 500)
+            raise KoparError(f"Echec appel Kopar: {e}", 502)
 
     async def creer_transaction(
         self,
