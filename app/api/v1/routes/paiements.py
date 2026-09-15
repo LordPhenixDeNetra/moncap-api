@@ -52,6 +52,29 @@ adherent_router = APIRouter(prefix="/mon-compte", tags=["paiements", "adherent"]
 admin_router = APIRouter(prefix="/admin", tags=["paiements", "admin"])
 
 
+def _calculer_paiement_adhesion_confirme(adhesion: Any) -> bool:
+    """Calcule flag 'paiementAdhesionConfirme' de maniere SURE.
+
+    Le modele SQL Adhesion (app/models/adhesion.py:71-73) expose :
+      - montant_adhesion: int (montant demandé / figé)
+      - paiement_confirme: bool (seule source de vérité officielle)
+      - reference_paiement: str | None
+    Les champs 'montant_adhesion_paye' et 'date_paiement_adhesion' N'EXISTENT PAS.
+    On les garde dans un getattr(, None) safe pour compatibilite retro si un jour ajoutés en migration.
+    """
+    flag_bd = bool(getattr(adhesion, "paiement_confirme", False))
+    has_ref = (
+        getattr(adhesion, "reference_paiement", None) is not None
+        and len(str(getattr(adhesion, "reference_paiement", "") or "").strip()) > 0
+    )
+    montant_legacy_ok = (
+        getattr(adhesion, "montant_adhesion_paye", None) is not None
+        and getattr(adhesion, "montant_adhesion_paye", 0) >= (getattr(adhesion, "montant_adhesion", None) or 0)
+    )
+    date_legacy_ok = getattr(adhesion, "date_paiement_adhesion", None) is not None
+    return bool(flag_bd or has_ref or montant_legacy_ok or date_legacy_ok)
+
+
 # =========================================================================
 # ENDPOINTS PUBLICS (Webhook Kopar + infos paiement adhérent depuis QR)
 # =========================================================================
@@ -106,10 +129,7 @@ async def etat_cotisation_publique(
             status_code=409,
             detail=f"Adhésion non validée (statut actuel: {adhesion.statut})",
         )
-    paiement_adhesion_confirme = (
-        (adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0))
-        or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
-    )
+    paiement_adhesion_confirme = _calculer_paiement_adhesion_confirme(adhesion)
     cotisations_service = CotisationsService(db)
     qr = QRCodeStorageService()
     _, qr_abs_url = qr.generer_qr_adherent(adhesion.id)
@@ -305,9 +325,7 @@ async def initier_paiement_cotisation_du_mois_public_par_adhesion(
     email_stocke = (adhesion.email or "").strip().lower()
     if not email_saisi or email_stocke != email_saisi:
         raise HTTPException(status_code=403, detail="L'email fourni ne correspond pas à cette adhésion")
-    paiement_adhesion_confirme = (
-        adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0)
-    ) or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
+    paiement_adhesion_confirme = _calculer_paiement_adhesion_confirme(adhesion)
     if not paiement_adhesion_confirme:
         raise HTTPException(
             status_code=409,
@@ -678,10 +696,7 @@ async def ma_cotisation_mois(
     montant_du = 0
     if cc is not None and not _statut_egal_payee(cc):
         montant_du = getattr(cc, "montant", 0) or 0
-    paiement_adhesion_confirme = (
-        (adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0))
-        or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
-    )
+    paiement_adhesion_confirme = _calculer_paiement_adhesion_confirme(adhesion)
     def _valeur_statut(s: Any) -> Any:
         return s.value if hasattr(s, "value") else s
     cc_out = None
