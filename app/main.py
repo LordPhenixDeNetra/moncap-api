@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
 import logging
 import sys
+import traceback
 import warnings
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from app.api.v1.router import api_v1_router
@@ -69,6 +71,63 @@ def _construire_cors_origins(settings) -> list[str]:
     return origins
 
 
+def _installer_middleware_cors_sur_erreur(app: FastAPI, cors_origins_valides: list[str]):
+    """
+    Middleware le PLUS EXTERNE (enveloppe toute l'app) :
+      1) CATCH les Exception bare (TypeError, KeyError, etc.) → construit une réponse 500 AVEC headers CORS
+         pour que le navigateur AFFICHE l'erreur (au lieu de la masquer en "CORS policy: No ACAO header").
+      2) Sur les réponses NORMALES qui ont quand même manqué les headers CORS (ex: réponses 404/422 générées
+         par FastAPI exception handlers), injecte les headers si Origin valide.
+
+    À APPELER APRÈS app.add_middleware(CORSMiddleware, ...) pour rester la couche la plus externe.
+    """
+    origines_ok_set = {str(o).strip().rstrip("/") for o in (cors_origins_valides or [])}
+
+    def _origine_est_autorisee(origin: str | None) -> str | None:
+        if not origin:
+            return None
+        o = str(origin).strip().rstrip("/")
+        import re
+        if o in origines_ok_set:
+            return o
+        regex_localhost = r"^https?://(localhost|127\.0\.0\.1):(5173|3000|8080)(/\S*)?$"
+        if re.match(regex_localhost, o):
+            return o
+        return None
+
+    @app.middleware("http")
+    async def ajouter_cors_sur_erreur(request: Request, call_next):
+        origin = request.headers.get("origin", "") or ""
+        origin_ok = _origine_est_autorisee(origin)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            status = 500
+            detail = "Internal Server Error"
+            error_trace: str | None = None
+            if __debug__:
+                error_trace = traceback.format_exc(limit=6)
+            body: dict = {"detail": [{"msg": str(exc), "type": type(exc).__name__}], "code": "INTERNAL_SERVER_ERROR"}
+            if error_trace is not None:
+                body["errorTrace"] = error_trace.splitlines()
+            logger.exception("Exception non gérée sur %s %s", request.method, request.url.path)
+            resp = JSONResponse(status_code=status, content=body)
+            if origin_ok:
+                resp.headers["Access-Control-Allow-Origin"] = origin_ok
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+                resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+                resp.headers["Access-Control-Allow-Headers"] = "Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-ID"
+            else:
+                resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Access-Control-Expose-Headers"] = "Content-Disposition,X-Total-Count,X-Response-Time-MS,X-Request-ID"
+            return resp
+
+        if origin_ok and "access-control-allow-origin" not in {k.lower(): v for k, v in response.headers.items()}:
+            response.headers["Access-Control-Allow-Origin"] = origin_ok
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.api_title, lifespan=lifespan)
@@ -116,6 +175,12 @@ def create_app() -> FastAPI:
         ],
         max_age=3600,                 # Cache OPTIONS preflight 1h → moins d'appels navigateur
     )
+
+    # ⚠️ Anti-masquage CORS : PLUS EXTERNE DES MIDDLEWARES (enregistré APRÈS CORSMiddleware).
+    # Attrape TOUTES les Exception Python (KeyError, TypeError, AttributeError...) et renvoie
+    # une réponse JSON 500 AVEC headers Access-Control-Allow-Origin → navigateur ne masque plus
+    # l'erreur en "CORS policy blocked".
+    _installer_middleware_cors_sur_erreur(app, cors_origins)
 
     app.mount(settings.public_files_path, StaticFiles(directory=settings.storage_dir, check_dir=False), name="files")
     app.include_router(api_v1_router, prefix="/api/v1")

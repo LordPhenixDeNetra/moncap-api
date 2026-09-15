@@ -22,6 +22,8 @@ from app.repositories.users import UserRepository
 from app.repositories.adhesions import AdhesionRepository
 from app.repositories.paiements import CotisationMensuelleRepository
 from app.schemas.paiements import (
+    AdherentEtatCotisationFlatOut,
+    AdherentEtatCotisationResponse,
     CotisationDetailListResponse,
     CotisationDetailOut,
     CotisationListResponse,
@@ -90,6 +92,7 @@ async def kopar_webhook(
     "/cotisation/etat",
     summary="État cotisation pour un adhérent (accessible par QR)",
     description="Point d'entrée public appelé par la page web atteinte après scan du QR. Retourne infos adhérent + cotisation du mois + montants.",
+    response_model=AdherentEtatCotisationResponse,
 )
 async def etat_cotisation_publique(
     adh: uuid.UUID = Query(..., alias="adh", description="UUID de l'adhésion"),
@@ -104,88 +107,100 @@ async def etat_cotisation_publique(
             detail=f"Adhésion non validée (statut actuel: {adhesion.statut})",
         )
     paiement_adhesion_confirme = (
-        adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0)
-    ) or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
+        (adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0))
+        or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
+    )
     cotisations_service = CotisationsService(db)
     qr = QRCodeStorageService()
     _, qr_abs_url = qr.generer_qr_adherent(adhesion.id)
     cotisation_courante = await cotisations_service.get_cotisation_courante(adhesion.id)
     if cotisation_courante is None:
         today = date.today()
-        cotisation_courante = await cotisations_service.creer_cotisation(
-            adhesion.id, today.year, today.month
-        )
-        await db.commit()
+        try:
+            cotisation_courante = await cotisations_service.creer_cotisation(
+                adhesion.id, today.year, today.month
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            cotisation_courante = None
     try:
         params_svc = ParametresPaiementService(db)
         montant_reference = await params_svc.get_montant(
             ParametrePaiementCode.cotisation_mensuelle, date.today()
         )
         if montant_reference and montant_reference > 0:
-            if (
+            if cotisation_courante is not None and (
                 cotisation_courante.montant is None
                 or cotisation_courante.montant <= 0
                 or abs(cotisation_courante.montant - montant_reference) > 1
             ):
                 cotisation_courante.montant = montant_reference
     except Exception:
-        if cotisation_courante.montant is None or cotisation_courante.montant <= 0:
+        if cotisation_courante is not None and (cotisation_courante.montant is None or cotisation_courante.montant <= 0):
             cotisation_courante.montant = 5
     historique = await cotisations_service.historique_adherent(adhesion.id, 24)
     annee_courante = date.today().year
+    def _statut_egal_payee(c: Any) -> bool:
+        s = getattr(c, "statut", None)
+        return s == CotisationStatut.payee or (hasattr(s, "value") and s.value == "payee") or str(s) == "payee"
     montant_annuel_paye = sum(
-        c.montant
+        (getattr(c, "montant", 0) or 0)
         for c in historique
-        if c.annee == annee_courante and c.statut == CotisationStatut.payee
+        if getattr(c, "annee", 0) == annee_courante and _statut_egal_payee(c)
     )
     mois_payes = sum(
-        1 for c in historique if c.annee == annee_courante and c.statut == CotisationStatut.payee
+        1 for c in historique if getattr(c, "annee", 0) == annee_courante and _statut_egal_payee(c)
     )
-    montant_du = (
-        cotisation_courante.montant
-        if cotisation_courante and cotisation_courante.statut != CotisationStatut.payee
-        else 0
-    )
+    montant_du = 0
+    if cotisation_courante is not None:
+        cc_statut = getattr(cotisation_courante, "statut", None)
+        cc_montant = getattr(cotisation_courante, "montant", None) or 0
+        if not _statut_egal_payee(cotisation_courante):
+            montant_du = cc_montant or 0
+    def _valeur_statut(s: Any) -> Any:
+        return s.value if hasattr(s, "value") else s
+    cotisation_courante_out = None
+    if cotisation_courante is not None:
+        cotisation_courante_out = {
+            "id": str(getattr(cotisation_courante, "id", "") or ""),
+            "adhesionId": str(getattr(cotisation_courante, "adhesion_id", "") or ""),
+            "annee": getattr(cotisation_courante, "annee", None),
+            "mois": getattr(cotisation_courante, "mois", None),
+            "montant": getattr(cotisation_courante, "montant", 0) or 0,
+            "devise": getattr(cotisation_courante, "devise", "XOF") or "XOF",
+            "statut": _valeur_statut(getattr(cotisation_courante, "statut", None)),
+            "paiementDate": getattr(cotisation_courante, "paiement_date", None),
+            "modePaiement": getattr(cotisation_courante, "mode_paiement", None),
+            "referencePaiement": getattr(cotisation_courante, "reference_paiement", None),
+            "paiementManuel": bool(getattr(cotisation_courante, "paiement_manuel", False)),
+        }
+    historique_out = [
+        {
+            "id": str(getattr(c, "id", "") or ""),
+            "annee": getattr(c, "annee", None),
+            "mois": getattr(c, "mois", None),
+            "montant": getattr(c, "montant", 0) or 0,
+            "statut": _valeur_statut(getattr(c, "statut", None)),
+            "paiementDate": getattr(c, "paiement_date", None),
+        }
+        for c in historique or []
+    ]
     return {
         "data": {
             "adhesionId": str(adhesion.id),
-            "nom": adhesion.nom,
-            "prenom": adhesion.prenom,
-            "email": adhesion.email,
+            "nom": getattr(adhesion, "nom", None),
+            "prenom": getattr(adhesion, "prenom", None),
+            "email": getattr(adhesion, "email", None),
             "telephone": getattr(adhesion, "tel_mobile", None),
             "commissariat": getattr(adhesion, "commissariat", None),
-            "paiementAdhesionConfirme": paiement_adhesion_confirme,
+            "paiementAdhesionConfirme": bool(paiement_adhesion_confirme),
             "qrUrl": qr_abs_url,
-            "montantDu": montant_du,
-            "montantAnnuelPaye": montant_annuel_paye,
-            "moisPayesAnnee": mois_payes,
-            "cotisationCourante": (
-                {
-                    "id": str(cotisation_courante.id),
-                    "adhesionId": str(cotisation_courante.adhesion_id),
-                    "annee": cotisation_courante.annee,
-                    "mois": cotisation_courante.mois,
-                    "montant": cotisation_courante.montant,
-                    "devise": cotisation_courante.devise,
-                    "statut": cotisation_courante.statut.value if hasattr(cotisation_courante.statut, "value") else str(cotisation_courante.statut),
-                    "paiementDate": cotisation_courante.paiement_date,
-                    "modePaiement": cotisation_courante.mode_paiement,
-                    "referencePaiement": cotisation_courante.reference_paiement,
-                    "paiementManuel": cotisation_courante.paiement_manuel,
-                }
-                if cotisation_courante else None
-            ),
-            "historique": [
-                {
-                    "id": str(c.id),
-                    "annee": c.annee,
-                    "mois": c.mois,
-                    "montant": c.montant,
-                    "statut": c.statut.value if hasattr(c.statut, "value") else str(c.statut),
-                    "paiementDate": c.paiement_date,
-                }
-                for c in historique
-            ],
+            "montantDu": int(montant_du or 0),
+            "montantAnnuelPaye": int(montant_annuel_paye or 0),
+            "moisPayesAnnee": int(mois_payes or 0),
+            "cotisationCourante": cotisation_courante_out,
+            "historique": historique_out,
         }
     }
 
@@ -608,7 +623,7 @@ async def mes_cotisations(
 
 @adherent_router.get(
     "/cotisation-du-mois",
-    response_model=AdherentEtatCotisationOut,
+    response_model=AdherentEtatCotisationFlatOut,
     summary="État de ma cotisation du mois en cours",
 )
 async def ma_cotisation_mois(
@@ -628,41 +643,87 @@ async def ma_cotisation_mois(
     cc = await service.get_cotisation_courante(adhesion.id)
     if cc is None:
         today = date.today()
-        cc = await service.creer_cotisation(adhesion.id, today.year, today.month)
-        await db.commit()
+        try:
+            cc = await service.creer_cotisation(adhesion.id, today.year, today.month)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            cc = None
     try:
         params_svc = ParametresPaiementService(db)
         montant_reference = await params_svc.get_montant(
             ParametrePaiementCode.cotisation_mensuelle, date.today()
         )
         if montant_reference and montant_reference > 0:
-            if (
+            if cc is not None and (
                 cc.montant is None
                 or cc.montant <= 0
                 or abs(cc.montant - montant_reference) > 1
             ):
                 cc.montant = montant_reference
     except Exception:
-        if cc.montant is None or cc.montant <= 0:
+        if cc is not None and (cc.montant is None or cc.montant <= 0):
             cc.montant = 5
     historique = await service.historique_adherent(adhesion.id, 24)
     annee = date.today().year
-    montant_annuel_paye = sum(c.montant for c in historique if c.annee == annee and c.statut == CotisationStatut.payee)
-    mois_payes = sum(1 for c in historique if c.annee == annee and c.statut == CotisationStatut.payee)
-    montant_du = cc.montant if cc and cc.statut != CotisationStatut.payee else 0
+    def _statut_egal_payee(c: Any) -> bool:
+        s = getattr(c, "statut", None)
+        return s == CotisationStatut.payee or (hasattr(s, "value") and s.value == "payee") or str(s) == "payee"
+    montant_annuel_paye = sum(
+        (getattr(c, "montant", 0) or 0)
+        for c in historique
+        if getattr(c, "annee", 0) == annee and _statut_egal_payee(c)
+    )
+    mois_payes = sum(1 for c in historique if getattr(c, "annee", 0) == annee and _statut_egal_payee(c))
+    montant_du = 0
+    if cc is not None and not _statut_egal_payee(cc):
+        montant_du = getattr(cc, "montant", 0) or 0
     paiement_adhesion_confirme = (
-        adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0)
-    ) or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
+        (adhesion.montant_adhesion_paye is not None and adhesion.montant_adhesion_paye >= (adhesion.montant_adhesion or 0))
+        or (getattr(adhesion, "date_paiement_adhesion", None) is not None)
+    )
+    def _valeur_statut(s: Any) -> Any:
+        return s.value if hasattr(s, "value") else s
+    cc_out = None
+    if cc is not None:
+        cc_out = {
+            "id": str(getattr(cc, "id", "") or ""),
+            "adhesionId": str(getattr(cc, "adhesion_id", "") or ""),
+            "annee": getattr(cc, "annee", None),
+            "mois": getattr(cc, "mois", None),
+            "montant": getattr(cc, "montant", 0) or 0,
+            "devise": getattr(cc, "devise", "XOF") or "XOF",
+            "statut": _valeur_statut(getattr(cc, "statut", None)),
+            "paiementDate": getattr(cc, "paiement_date", None),
+            "modePaiement": getattr(cc, "mode_paiement", None),
+            "referencePaiement": getattr(cc, "reference_paiement", None),
+            "paiementManuel": bool(getattr(cc, "paiement_manuel", False)),
+        }
+    historique_out = [
+        {
+            "id": str(getattr(c, "id", "") or ""),
+            "annee": getattr(c, "annee", None),
+            "mois": getattr(c, "mois", None),
+            "montant": getattr(c, "montant", 0) or 0,
+            "statut": _valeur_statut(getattr(c, "statut", None)),
+            "paiementDate": getattr(c, "paiement_date", None),
+        }
+        for c in historique or []
+    ]
     return {
         "adhesionId": adhesion.id,
-        "nom": adhesion.nom,
-        "prenom": adhesion.prenom,
+        "nom": getattr(adhesion, "nom", None),
+        "prenom": getattr(adhesion, "prenom", None),
+        "email": getattr(adhesion, "email", None),
+        "telephone": getattr(adhesion, "tel_mobile", None),
+        "commissariat": getattr(adhesion, "commissariat", None),
         "qrUrl": qr_abs,
-        "cotisationCourante": cc,
-        "montantDu": montant_du,
-        "montantAnnuelPaye": montant_annuel_paye,
-        "moisPayesAnnee": mois_payes,
-        "paiementAdhesionConfirme": paiement_adhesion_confirme,
+        "cotisationCourante": cc_out,
+        "montantDu": int(montant_du or 0),
+        "montantAnnuelPaye": int(montant_annuel_paye or 0),
+        "moisPayesAnnee": int(mois_payes or 0),
+        "paiementAdhesionConfirme": bool(paiement_adhesion_confirme),
+        "historique": historique_out,
     }
 
 

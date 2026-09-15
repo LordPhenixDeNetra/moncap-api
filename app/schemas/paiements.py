@@ -143,17 +143,64 @@ class TransactionKoparListResponse(BaseModel):
     data: list[TransactionKoparOut]
 
 
-class AdherentEtatCotisationOut(BaseModel):
+class CotisationHistoriqueLightOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: uuid.UUID
+    annee: int
+    mois: int
+    montant: int | None = 0
+    statut: CotisationStatut
+    paiement_date: datetime | None = Field(default=None, alias="paiementDate")
+
+
+class AdherentEtatCotisationCouranteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: uuid.UUID | None = None
+    adhesion_id: uuid.UUID | None = Field(default=None, alias="adhesionId")
+    annee: int | None = None
+    mois: int | None = None
+    montant: int | None = 0
+    devise: str = "XOF"
+    statut: CotisationStatut | None = None
+    paiement_date: datetime | None = Field(default=None, alias="paiementDate")
+    mode_paiement: str | None = Field(default=None, alias="modePaiement")
+    reference_paiement: str | None = Field(default=None, alias="referencePaiement")
+    paiement_manuel: bool = Field(default=False, alias="paiementManuel")
+
+
+class AdherentEtatCotisationFlatOut(BaseModel):
+    """Format SANS wrapper {data:}. Pour endpoint /mon-compte/cotisation-du-mois (format historique)."""
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     adhesion_id: uuid.UUID = Field(alias="adhesionId")
-    nom: str
-    prenom: str
-    qr_url: str = Field(alias="qrUrl")
-    cotisation_courante: CotisationMensuelleOut | None = Field(
-        default=None, alias="cotisationCourante"
-    )
+    nom: str | None = None
+    prenom: str | None = None
+    email: str | None = None
+    telephone: str | None = None
+    commissariat: str | None = None
+    paiement_adhesion_confirme: bool = Field(default=False, alias="paiementAdhesionConfirme")
+    qr_url: str | None = Field(default=None, alias="qrUrl")
     montant_du: int = Field(default=0, alias="montantDu")
     montant_annuel_paye: int = Field(default=0, alias="montantAnnuelPaye")
     mois_payes_annee: int = Field(default=0, alias="moisPayesAnnee")
-    paiement_adhesion_confirme: bool = Field(default=False, alias="paiementAdhesionConfirme")
+    cotisation_courante: AdherentEtatCotisationCouranteOut | None = Field(
+        default=None, alias="cotisationCourante"
+    )
+    historique: list[CotisationHistoriqueLightOut] = Field(default_factory=list)
+
+
+class AdherentEtatCotisationData(AdherentEtatCotisationFlatOut):
+    """Alias du format data inclus dans le wrapper public."""
+    pass
+
+
+class AdherentEtatCotisationResponse(BaseModel):
+    """Format AVEC wrapper {data: ...}. Pour endpoint public /cotisation/etat."""
+    data: AdherentEtatCotisationData
+
+
+class AdherentEtatCotisationOut(AdherentEtatCotisationResponse):
+    """Alias retro-compatibilite. Vaut AdherentEtatCotisationResponse (wrapper)."""
+    pass
