@@ -86,7 +86,21 @@ class Settings(BaseSettings):
     access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 60 * 60 * 24 * 14
 
-    cors_allow_origins: list[AnyUrl] = []
+    cors_allow_origins: list[str] = Field(
+        default_factory=lambda: [
+            # ⚠️ RÈGLE CORS CRITIQUE : JAMAIS '*' si allow_credentials=True.
+            # Navigateur bloque systématiquement les requêtes avec Bearer JWT / cookies si le
+            # header Access-Control-Allow-Origin est '*' avec allow_credentials=true.
+            # Toujours METTRE les domaines EXPLICITES (avec protocole https:// et port si besoin)
+            #
+            # ↓↓↓ PROD Alwaysdata + Innovamind frontend deployés : à adapter selon ton domaine ↓↓↓
+            "https://moncap.innovamind.tech",
+            "http://moncap.innovamind.tech",
+            "https://www.moncap.innovamind.tech",
+            "http://www.moncap.innovamind.tech",
+        ],
+        description="Liste DOMAINES EXPLICITES autorisés en CORS (SANS '*' !). Ajoutez toujours protocole https:// (avec http:// en fallback).",
+    )
     cors_allow_credentials: bool = True
 
     refresh_cookie_name: str = "moncap_refresh"
