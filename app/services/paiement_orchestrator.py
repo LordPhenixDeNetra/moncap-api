@@ -170,6 +170,25 @@ class PaiementOrchestratorService:
         country_code = "SN" if not adhesion.est_diaspora else "SN"
 
         command_ref = f"ADH-{str(adhesion_id)}"
+        prev_txs_adh = await self.transactions.get_by_command_ref(command_ref)
+        if prev_txs_adh:
+            prev_adh = sorted(prev_txs_adh, key=lambda t: t.created_at or datetime.min, reverse=True)[0]
+            if prev_adh.kopar_token:
+                raw_url_adh = ""
+                try:
+                    if isinstance(prev_adh.raw_response, dict):
+                        raw_url_adh = str(prev_adh.raw_response.get("paymentUrl") or prev_adh.raw_response.get("payment_url") or "").strip()
+                except Exception:
+                    raw_url_adh = ""
+                prev_payment_url_adh = raw_url_adh or f"https://koparpay.com/payment/orders/{prev_adh.kopar_token}"
+                return KoparPaiementInitie(
+                    token=prev_adh.kopar_token,
+                    payment_url=prev_payment_url_adh,
+                    qr_code=getattr(prev_adh, "qr_code", None),
+                    montant=int(getattr(prev_adh, "montant", adhesion.montant_adhesion) or 0) or int(adhesion.montant_adhesion or 0),
+                    devise=getattr(prev_adh, "devise", "XOF") or "XOF",
+                    provider_response=prev_adh.raw_response or {},
+                )
         command_name = "Adhésion MONCAP"
         ipn_url, success_url, cancel_url = self._build_urls(
             type_tx="adhesion", adhesion_id=adhesion_id, cotisation_id=None
@@ -295,13 +314,19 @@ class PaiementOrchestratorService:
         if prev_txs:
             prev = sorted(prev_txs, key=lambda t: t.created_at or datetime.min, reverse=True)[0]
             if prev.kopar_token:
-                prev_payment_url = (
-                    (prev.payment_url or "").strip()
-                    or f"https://koparpay.com/payment/orders/{prev.kopar_token}"
-                )
+                raw_url = ""
+                try:
+                    if isinstance(prev.raw_response, dict):
+                        raw_url = str(prev.raw_response.get("paymentUrl") or prev.raw_response.get("payment_url") or "").strip()
+                except Exception:
+                    raw_url = ""
+                prev_payment_url = raw_url or f"https://koparpay.com/payment/orders/{prev.kopar_token}"
                 return KoparPaiementInitie(
                     token=prev.kopar_token,
                     payment_url=prev_payment_url,
+                    qr_code=getattr(prev, "qr_code", None),
+                    montant=int(getattr(prev, "montant", c.montant) or 0) or int(c.montant or 0),
+                    devise=getattr(prev, "devise", "XOF") or "XOF",
                     provider_response=prev.raw_response or {},
                 )
         command_name = f"Cotisation MONCAP {c.mois:02d}/{c.annee}"
