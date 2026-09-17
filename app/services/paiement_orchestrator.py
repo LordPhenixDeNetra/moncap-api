@@ -291,6 +291,19 @@ class PaiementOrchestratorService:
         if not adhesion:
             raise HTTPException(status_code=404, detail="Adhérent introuvable")
         command_ref = f"COT-{str(c.id)}"
+        prev_txs = await self.transactions.get_by_command_ref(command_ref)
+        if prev_txs:
+            prev = sorted(prev_txs, key=lambda t: t.created_at or datetime.min, reverse=True)[0]
+            if prev.kopar_token:
+                prev_payment_url = (
+                    (prev.payment_url or "").strip()
+                    or f"https://koparpay.com/payment/orders/{prev.kopar_token}"
+                )
+                return KoparPaiementInitie(
+                    token=prev.kopar_token,
+                    payment_url=prev_payment_url,
+                    provider_response=prev.raw_response or {},
+                )
         command_name = f"Cotisation MONCAP {c.mois:02d}/{c.annee}"
         ipn_url, success_url, cancel_url = self._build_urls(
             type_tx="cotisation", adhesion_id=c.adhesion_id, cotisation_id=c.id
