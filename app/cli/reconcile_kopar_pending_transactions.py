@@ -100,7 +100,8 @@ def _print(level: str, msg: str) -> None:
 async def _get_pending_transactions(
     db: AsyncSession, older_than_minutes: int
 ) -> list[TransactionKopar]:
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, older_than_minutes))
+    om = int(older_than_minutes or 0)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=om)
     stmt = (
         select(TransactionKopar)
         .where(
@@ -167,13 +168,11 @@ async def _apply_success_on_business_records(
             if cot is None:
                 actions.append("cotisation introuvable (skip)")
             else:
-                montant = int(cot.montant or 0) or 0
                 await orchestrator.cotisations.mark_paid(
                     tx.cotisation_id,
-                    montant=montant,
-                    mode=None,
-                    reference=f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}",
-                    paid_by_user_id=None,
+                    reference_paiement=f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}",
+                    mode_paiement="kopar_reconcile",
+                    paiement_date=datetime.now(timezone.utc),
                 )
                 actions.append(f"cotisation {tx.cotisation_id} -> statut payee")
                 await orchestrator.transactions.update_after_webhook(
@@ -203,10 +202,10 @@ async def _apply_success_on_business_records(
     return actions
 
 
-async def _reconcile_one_tour(*, dry_run: bool) -> Tuple[int, int, int]:
+async def _reconcile_one_tour(*, dry_run: bool, older_minutes_override: int | None = None) -> Tuple[int, int, int]:
     """Un seul passage. Retourne (candidats, marques_success, autres_marques)."""
     settings = get_settings()
-    older_minutes = max(1, int(settings.reconcile_kopar_older_minutes or 5))
+    older_minutes = int(older_minutes_override) if older_minutes_override is not None else max(1, int(settings.reconcile_kopar_older_minutes or 5))
     db: AsyncSession
     async with AsyncSessionLocal() as db:
         candidats = await _get_pending_transactions(db, older_minutes)
@@ -291,6 +290,7 @@ async def run_async(
     daemon: bool,
     dry_run: bool,
     force: bool,
+    older_minutes: int | None = None,
 ) -> int:
     settings = get_settings()
 
@@ -319,7 +319,7 @@ async def run_async(
         while True:
             debut = time.monotonic()
             try:
-                await _reconcile_one_tour(dry_run=dry_run)
+                await _reconcile_one_tour(dry_run=dry_run, older_minutes_override=older_minutes)
             except KeyboardInterrupt:
                 _print("INFO", "Interruption clavier. Sortie.")
                 return 0
@@ -331,7 +331,7 @@ async def run_async(
 
     # one-shot
     debut = time.monotonic()
-    total_cands, ok, autres = await _reconcile_one_tour(dry_run=dry_run)
+    total_cands, ok, autres = await _reconcile_one_tour(dry_run=dry_run, older_minutes_override=older_minutes)
     duree_ms = int((time.monotonic() - debut) * 1000)
     _print(
         "INFO",
@@ -370,6 +370,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Ignorer RECONCILE_KOPAR_ENABLED=false dans .env (mode debug).",
     )
+    parser.add_argument(
+        "--older-minutes",
+        type=int,
+        default=None,
+        help="Override RECONCILE_KOPAR_OLDER_MINUTES (ex: 0 = inclure memes les tx tres recentes).",
+    )
     args = parser.parse_args(argv)
     if args.apply and args.dry_run:
         print(
@@ -384,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
                 daemon=bool(args.daemon),
                 dry_run=dry_run,
                 force=bool(args.force),
+                older_minutes=args.older_minutes,
             )
         )
     except KeyboardInterrupt:
