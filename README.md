@@ -109,3 +109,12 @@ poetry run pip install httpx "qrcode[pil]" pillow
 
 
 <!-- python -m poetry run uvicorn main:app --reload --host 127.0.0.1 --port 8000 -->
+
+
+<!-- 
+
+https://moncap.innovamind.tech/paiement/succes
+https://moncap.innovamind.tech/paiement/annule
+
+ -->
+
