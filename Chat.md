@@ -779,5 +779,7 @@ Tout est terminé et fonctionnel ✅. Voici le récapitulatif complet :
 
 **Nouveau champ `est_diaspora`** : permet de distinguer les adhérents sénégalais des adhérents de la diaspora pour les **statistiques** (par pays, continent, diaspora vs Sénégal).
 
+
+---
 ---
 
