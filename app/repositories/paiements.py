@@ -316,3 +316,37 @@ class TransactionKoparRepository:
             t.customer_email = customer_email
         await self.session.flush()
         return t
+
+    async def sommer_montants(
+        self,
+        *,
+        statut: StatutTransactionKopar | None = None,
+        type_transaction: "TypeTransactionKopar | None" = None,
+        adhesion_id: uuid.UUID | None = None,
+        cotisation_id: uuid.UUID | None = None,
+    ) -> int:
+        """
+        Somme COALESCE(SUM(montant), 0) des transactions Kopar correspondant
+        aux filtres fournis. Permet de déterminer dynamiquement si un adhérent
+        a bien réglé ses frais d'adhésion (évite les incohérences de
+        adhesion.paiement_confirme qui n'est pas toujours mis à jour en back-office
+        pour les paiements manuels anciens).
+        """
+        q = select(func.coalesce(func.sum(TransactionKopar.montant), 0))
+        conds: list = []
+        if statut is not None:
+            conds.append(TransactionKopar.statut == statut)
+        if type_transaction is not None:
+            conds.append(TransactionKopar.type_transaction == type_transaction)
+        if adhesion_id is not None:
+            conds.append(TransactionKopar.adhesion_id == adhesion_id)
+        if cotisation_id is not None:
+            conds.append(TransactionKopar.cotisation_id == cotisation_id)
+        if conds:
+            q = q.where(and_(*conds))
+        res = await self.session.execute(q)
+        raw = res.scalar_one() or 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0

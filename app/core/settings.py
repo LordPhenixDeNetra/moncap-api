@@ -148,6 +148,18 @@ class Settings(BaseSettings):
     kopar_api_key: str | None = None
     kopar_private_key: str | None = None
 
+    # ================================================================
+    # RECONCILIATION KOPAR (fallback anti-régression si webhook KO)
+    # ================================================================
+    # Active / désactive globalement le job de rattrapage.
+    # Si "false" → le script CLI s'arrête immédiatement SAUF si on passe --force en argument.
+    reconcile_kopar_enabled: bool = True
+    # Ne traiter QUE les transactions créées il y a au moins N minutes (donne une chance au
+    # webhook Kopar de jouer d'abord en synchrone).
+    reconcile_kopar_older_minutes: int = 5
+    # Période de boucle en mode --daemon (en secondes). Défaut = 300s = 5 minutes.
+    reconcile_kopar_poll_seconds: int = 300
+
     default_adhesion_fcfa: int = 5
     default_cotisation_mensuelle_fcfa: int = 5
 

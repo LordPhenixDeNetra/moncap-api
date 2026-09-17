@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Request, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,12 +16,13 @@ from app.models.enums import AdhesionStatus
 from app.models.paiements import (
     CotisationStatut,
     ParametrePaiementCode,
+    StatutTransactionKopar,
     TypeTransactionKopar,
 )
 from app.models.user import User
 from app.repositories.users import UserRepository
 from app.repositories.adhesions import AdhesionRepository
-from app.repositories.paiements import CotisationMensuelleRepository
+from app.repositories.paiements import CotisationMensuelleRepository, TransactionKoparRepository
 from app.schemas.paiements import (
     AdherentEtatCotisationFlatOut,
     AdherentEtatCotisationResponse,
@@ -52,16 +54,13 @@ adherent_router = APIRouter(prefix="/mon-compte", tags=["paiements", "adherent"]
 admin_router = APIRouter(prefix="/admin", tags=["paiements", "admin"])
 
 
-def _calculer_paiement_adhesion_confirme(adhesion: Any) -> bool:
-    """Calcule flag 'paiementAdhesionConfirme' de maniere SURE.
-
-    Le modele SQL Adhesion (app/models/adhesion.py:71-73) expose :
-      - montant_adhesion: int (montant demandé / figé)
-      - paiement_confirme: bool (seule source de vérité officielle)
-      - reference_paiement: str | None
-    Les champs 'montant_adhesion_paye' et 'date_paiement_adhesion' N'EXISTENT PAS.
-    On les garde dans un getattr(, None) safe pour compatibilite retro si un jour ajoutés en migration.
-    """
+def _calculer_paiement_adhesion_confirme_legacy(adhesion: Any) -> bool:
+    """Calcule flag paiement adhesion avec SEULEMENT les infos de la ligne adhesion.
+    Utilisé comme fallback rapide quand on n'a pas de DB session sous la main.
+    Voir aussi _calculer_paiement_adhesion_confirme_async() pour la version DYNAMIQUE
+    qui inclut la somme des transactions Kopar SUCCESS en base (source de vérité
+    pour les paiements initiaux / manuels anciens où paiement_confirme n'a pas
+    été mis à jour en back-office)."""
     flag_bd = bool(getattr(adhesion, "paiement_confirme", False))
     has_ref = (
         getattr(adhesion, "reference_paiement", None) is not None
@@ -73,6 +72,196 @@ def _calculer_paiement_adhesion_confirme(adhesion: Any) -> bool:
     )
     date_legacy_ok = getattr(adhesion, "date_paiement_adhesion", None) is not None
     return bool(flag_bd or has_ref or montant_legacy_ok or date_legacy_ok)
+
+
+async def _calculer_paiement_adhesion_confirme(
+    adhesion: Any, db: AsyncSession, montant_ref_adhesion_initiale: int | None = None
+) -> bool:
+    """Calcule DYNAMIQUEMENT paiementAdhesionConfirme (source de vérité = TRANSACTIONS KOPAR).
+    Ordre priorité :
+      1. (Colonne SQL) adhesion.paiement_confirme = True → OUI
+      2. (Colonne SQL) adhesion.reference_paiement non vide → OUI
+      3. (SUM DB) Somme montant transactions_kopar.statut=success + type=adhesion + adhesion_id=?
+         >= (montant_ref_adhesion_initiale DEPUIS parametres_paiement DB JAMAIS 25000 hardcodé) → OUI
+      4. Fallback legacy → OUI
+    """
+    legacy = _calculer_paiement_adhesion_confirme_legacy(adhesion)
+    if legacy:
+        return True
+    aid = getattr(adhesion, "id", None)
+    if aid is None:
+        return False
+    tx_repo = TransactionKoparRepository(db)
+    somme = 0
+    try:
+        somme = await tx_repo.sommer_montants(
+            statut=StatutTransactionKopar.success,
+            type_transaction=TypeTransactionKopar.adhesion,
+            adhesion_id=uuid.UUID(str(aid)),
+        )
+    except Exception:
+        somme = 0
+    if somme <= 0:
+        return False
+    if montant_ref_adhesion_initiale is None or montant_ref_adhesion_initiale <= 0:
+        try:
+            params_svc = ParametresPaiementService(db)
+            montant_ref_adhesion_initiale = await params_svc.get_montant(
+                ParametrePaiementCode.adhesion_initiale, date.today()
+            )
+        except Exception:
+            fallback_col = getattr(adhesion, "montant_adhesion", None) or 0
+            montant_ref_adhesion_initiale = fallback_col if fallback_col > 0 else 1
+    return int(somme) >= int(montant_ref_adhesion_initiale)
+
+
+# =========================================================================
+# ENDPOINT PUBLIC RACCOURCI QR DIRECT (scanner caméra → page Kopar, pas formulaire MONCAP)
+# =========================================================================
+
+def _statut_est_payee(cotisation: Any) -> bool:
+    s = getattr(cotisation, "statut", None)
+    return (
+        s == CotisationStatut.payee
+        or (hasattr(s, "value") and s.value == "payee")
+        or str(s) == "payee"
+    )
+
+
+def _build_frontend_payer_cotisation_redirect(
+    settings: Any, *, adh: uuid.UUID | str, **query_extra: Any
+) -> str:
+    base_front = (getattr(settings, "public_base_url", None) or "").rstrip("/")
+    if not base_front:
+        base_front = "https://moncap.innovamind.tech"
+    query_parts = [f"adh={str(adh)}"]
+    for k, v in query_extra.items():
+        if v is None:
+            continue
+        from urllib.parse import quote as _url_quote
+        query_parts.append(f"{k}={_url_quote(str(v))}")
+    return f"{base_front}/payer-cotisation?{'&'.join(query_parts)}"
+
+
+@public_router.get(
+    "/cotisation/qr-paiement-direct",
+    summary="(Public GET) QR Permanent → redirect 302 DIRECT vers page Kopar du mois courant (sans formulaire intermédiaire)",
+    description="Endpoint appelé PAR LE SCANNER CAMÉRA iOS/Android quand un adhérent·e scanne son QR permanent. "
+    "URL courtes/simples GET : ?adh=UUID_ADHESION&mois=auto. "
+    "Renvoie systématiquement un HTTP 302 FOUND : "
+    "(a) adhésion introuvable → /payer-cotisation?adh=UUID&erreur=introuvable ; "
+    "(b) adhésion pas encore payée (frais 25000) → /payer-cotisation?adh=UUID&erreur=adhesion-impayee ; "
+    "(c) cotisation DU MOIS déjà payée → /payer-cotisation?adh=UUID&info=deja-payee&mois=&annee= ; "
+    "(d) sinon : initie transaction Kopar POUR CETTE COTISATION (metadata cotisation_id exact, tâche #3) puis "
+    "redirect Location: https://koparpay.com/payment/orders/{kopar_token}",
+    status_code=302,
+    response_class=RedirectResponse,
+)
+async def qr_paiement_direct_cotisation(
+    adh: uuid.UUID = Query(..., alias="adh", description="UUID adhésion (issu QR permanent)"),
+    mois: int | str | None = Query("auto", alias="mois", description="'auto' = mois courant, ou entier 1-12"),
+    annee: int | str | None = Query("auto", alias="annee", description="'auto' = année courante, ou entier"),
+    db: AsyncSession = Depends(get_db),
+):
+    settings = get_settings()
+    adhesion = await AdhesionRepository(db).get_by_id(adh)
+    if adhesion is None:
+        url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="introuvable")
+        return RedirectResponse(url=url, status_code=302)
+    adhesion_validee = (
+        getattr(adhesion, "statut", None) == AdhesionStatus.validee
+        or (hasattr(getattr(adhesion, "statut", None), "value") and adhesion.statut.value == "validee")
+        or str(getattr(adhesion, "statut", "")) == "validee"
+    )
+    if not adhesion_validee:
+        url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="adhesion-en-attente")
+        return RedirectResponse(url=url, status_code=302)
+    paiement_adhesion_confirme = await _calculer_paiement_adhesion_confirme(adhesion, db)
+    if not paiement_adhesion_confirme:
+        url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="adhesion-impayee")
+        return RedirectResponse(url=url, status_code=302)
+
+    today = date.today()
+    if isinstance(mois, str) and str(mois).strip().lower() == "auto":
+        mois_num = today.month
+    else:
+        try:
+            mois_num = int(str(mois).strip())
+        except (TypeError, ValueError):
+            mois_num = today.month
+    if isinstance(annee, str) and str(annee).strip().lower() == "auto":
+        annee_num = today.year
+    else:
+        try:
+            annee_num = int(str(annee).strip())
+        except (TypeError, ValueError):
+            annee_num = today.year
+    if not (1 <= mois_num <= 12):
+        mois_num = today.month
+    if annee_num < 2024 or annee_num > 2100:
+        annee_num = today.year
+
+    svc_cot = CotisationsService(db)
+    cc = await svc_cot.creer_cotisation(adhesion.id, annee_num, mois_num)
+    await db.commit()
+    try:
+        params_svc = ParametresPaiementService(db)
+        montant_ref = await params_svc.get_montant(
+            ParametrePaiementCode.cotisation_mensuelle,
+            date(annee_num, mois_num, 1),
+        )
+        if montant_ref and montant_ref > 0:
+            if (
+                getattr(cc, "montant", None) is None
+                or getattr(cc, "montant", 0) <= 0
+                or abs(getattr(cc, "montant", 0) - montant_ref) > 1
+            ):
+                cc.montant = montant_ref
+    except Exception:
+        if getattr(cc, "montant", None) is None or getattr(cc, "montant", 0) <= 0:
+            cc.montant = settings.default_cotisation_mensuelle_fcfa or 5
+
+    if _statut_est_payee(cc):
+        url = _build_frontend_payer_cotisation_redirect(
+            settings,
+            adh=adh,
+            info="deja-payee",
+            mois=mois_num,
+            annee=annee_num,
+        )
+        return RedirectResponse(url=url, status_code=302)
+
+    orchestrator = PaiementOrchestratorService(db)
+    try:
+        initie = await orchestrator.initier_paiement_cotisation(cc.id, force=False, service=None)
+    except KoparError as e:
+        mapped = "paiement-indisponible"
+        if e.kopar_error_code and str(e.kopar_error_code).upper() == "NO_AUTH":
+            mapped = "kopar-no-auth"
+        elif e.kopar_error_code and str(e.kopar_error_code).upper() == "INVALID_AMOUNT":
+            mapped = "kopar-montant-invalide"
+        await db.rollback()
+        url = _build_frontend_payer_cotisation_redirect(
+            settings,
+            adh=adh,
+            erreur=mapped,
+            kopar=str(e.kopar_error_code or ""),
+        )
+        return RedirectResponse(url=url, status_code=302)
+    except HTTPException:
+        raise
+    except Exception:
+        await db.rollback()
+        url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="paiement-erreur")
+        return RedirectResponse(url=url, status_code=302)
+    await db.commit()
+    payment_url = (initie.payment_url or "").strip()
+    if not payment_url and initie.token:
+        payment_url = f"https://koparpay.com/payment/orders/{initie.token}"
+    if not payment_url:
+        url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="paiement-indisponible")
+        return RedirectResponse(url=url, status_code=302)
+    return RedirectResponse(url=payment_url, status_code=302)
 
 
 # =========================================================================
@@ -129,7 +318,7 @@ async def etat_cotisation_publique(
         or (hasattr(adhesion.statut, "value") and adhesion.statut.value == "validee")
         or str(getattr(adhesion, "statut", "")) == "validee"
     )
-    paiement_adhesion_confirme = _calculer_paiement_adhesion_confirme(adhesion)
+    paiement_adhesion_confirme = await _calculer_paiement_adhesion_confirme(adhesion, db)
     qr = QRCodeStorageService()
     _, qr_abs_url = qr.generer_qr_adherent(adhesion.id)
     cotisation_courante: Any = None
@@ -329,7 +518,7 @@ async def initier_paiement_cotisation_du_mois_public_par_adhesion(
     email_stocke = (adhesion.email or "").strip().lower()
     if not email_saisi or email_stocke != email_saisi:
         raise HTTPException(status_code=403, detail="L'email fourni ne correspond pas à cette adhésion")
-    paiement_adhesion_confirme = _calculer_paiement_adhesion_confirme(adhesion)
+    paiement_adhesion_confirme = await _calculer_paiement_adhesion_confirme(adhesion, db)
     if not paiement_adhesion_confirme:
         raise HTTPException(
             status_code=409,
@@ -700,7 +889,7 @@ async def ma_cotisation_mois(
     montant_du = 0
     if cc is not None and not _statut_egal_payee(cc):
         montant_du = getattr(cc, "montant", 0) or 0
-    paiement_adhesion_confirme = _calculer_paiement_adhesion_confirme(adhesion)
+    paiement_adhesion_confirme = await _calculer_paiement_adhesion_confirme(adhesion, db)
     def _valeur_statut(s: Any) -> Any:
         return s.value if hasattr(s, "value") else s
     cc_out = None

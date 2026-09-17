@@ -30,10 +30,29 @@ class QRCodeStorageService:
         return f"{self.public_prefix}/{QR_SUBDIR}/{str(adhesion_id)}.png"
 
     def build_paiement_url(self, adhesion_id: uuid.UUID | str) -> str:
+        """
+        Contenu textuel du QR Permanent d'un·e adhérent·e.
+
+        IMPORTANT : scanneur caméra iOS/Android fait un GET SIMPLE (pas de POST,
+        pas de JWT, pas de formulaire). On pointe DONC VERS UN ENDPOINT BACKEND
+        PUBLIC GET qui initie AUTOMATIQUEMENT le paiement du mois courant puis
+        redirige en HTTP 302 :
+          - vers page Kopar si paiement initialisable OK (cas normal)
+          - vers front /payer-cotisation sinon (adhésion introuvable,
+            adhésion non payée, cotisation déjà réglée, erreur Kopar...)
+
+        Anciennement on pointait directement vers le frontend
+        `{public_base_url}/payer-cotisation?adh=UUID` ce qui forçait un écran
+        formulaire à remplir même pour un adhérent qui avait déjà payé son
+        adhésion.
+        """
         settings = get_settings()
-        base = settings.public_base_url or settings.api_base_url or ""
+        base = settings.api_base_url or settings.public_base_url or ""
         base = base.rstrip("/")
-        return f"{base}/payer-cotisation?adh={str(adhesion_id)}"
+        if not base:
+            base = "https://thior.alwaysdata.net"
+        from urllib.parse import quote as _q
+        return f"{base}/api/v1/paiements/cotisation/qr-paiement-direct?adh={_q(str(adhesion_id))}&mois=auto"
 
     def generate_qr_png_bytes(self, content: str) -> bytes:
         try:
