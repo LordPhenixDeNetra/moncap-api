@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Request, Query
 from fastapi.responses import RedirectResponse
@@ -250,9 +253,18 @@ async def qr_paiement_direct_cotisation(
         return RedirectResponse(url=url, status_code=302)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        logger.exception(
+            "[QR-PAIEMENT-DIRECT] Exception inattendue init paiement cotisation adhesion=%s cc=%s/%s : %r",
+            str(adh), getattr(cc, "annee", None), getattr(cc, "mois", None), e,
+        )
         await db.rollback()
-        url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="paiement-erreur")
+        url = _build_frontend_payer_cotisation_redirect(
+            settings,
+            adh=adh,
+            erreur="paiement-erreur",
+            details=type(e).__name__[:80],
+        )
         return RedirectResponse(url=url, status_code=302)
     await db.commit()
     payment_url = (initie.payment_url or "").strip()

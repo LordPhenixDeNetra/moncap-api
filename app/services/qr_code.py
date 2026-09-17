@@ -33,26 +33,37 @@ class QRCodeStorageService:
         """
         Contenu textuel du QR Permanent d'un·e adhérent·e.
 
-        IMPORTANT : scanneur caméra iOS/Android fait un GET SIMPLE (pas de POST,
-        pas de JWT, pas de formulaire). On pointe DONC VERS UN ENDPOINT BACKEND
-        PUBLIC GET qui initie AUTOMATIQUEMENT le paiement du mois courant puis
-        redirige en HTTP 302 :
-          - vers page Kopar si paiement initialisable OK (cas normal)
-          - vers front /payer-cotisation sinon (adhésion introuvable,
-            adhésion non payée, cotisation déjà réglée, erreur Kopar...)
+        (1) SCAN CAMÉRA → GET SIMPLE (pas de JWT). On DOIT pointer VERS L'URL BACKEND
+        PUBLIC : `{BACKEND_URL}/api/v1/paiements/cotisation/qr-paiement-direct`
+        qui initie AUTOMATIQUEMENT paiement mois courant puis HTTP 302 → Kopar.
 
-        Anciennement on pointait directement vers le frontend
-        `{public_base_url}/payer-cotisation?adh=UUID` ce qui forçait un écran
-        formulaire à remplir même pour un adhérent qui avait déjà payé son
-        adhésion.
+        Ordre PRIORITÉ (IMPORTANT : jamais frontend) :
+          1. settings.backend_public_base_url          ← paramètre EXPLICITE dédié QR (si renseigné en .env = le plus sûr)
+          2. settings.api_base_url                     ← si ça ressemble clairement à un backend (alwaysdata / localhost / port API)
+          3. fallback sûr prod Alwaysdata : https://thior.alwaysdata.net
         """
         settings = get_settings()
-        base = settings.api_base_url or settings.public_base_url or ""
-        base = base.rstrip("/")
-        if not base:
-            base = "https://thior.alwaysdata.net"
+        explicit = (getattr(settings, "backend_public_base_url", None) or "").strip()
+        if explicit.rstrip("/"):
+            base_backend = explicit.rstrip("/")
+        else:
+            base_backend = ""
+            api_val = (getattr(settings, "api_base_url", None) or "").strip()
+            if api_val:
+                low = api_val.lower()
+                if (
+                    "alwaysdata.net" in low
+                    or "localhost" in low
+                    or ":8000" in low
+                    or ":8080" in low
+                    or low.endswith("/api")
+                ):
+                    base_backend = api_val.rstrip("/")
+            if not base_backend:
+                # Fallback 100% sûr. Jamais https://moncap.innovamind.tech (= frontend)
+                base_backend = "https://thior.alwaysdata.net"
         from urllib.parse import quote as _q
-        return f"{base}/api/v1/paiements/cotisation/qr-paiement-direct?adh={_q(str(adhesion_id))}&mois=auto"
+        return f"{base_backend}/api/v1/paiements/cotisation/qr-paiement-direct?adh={_q(str(adhesion_id))}&mois=auto"
 
     def generate_qr_png_bytes(self, content: str) -> bytes:
         try:

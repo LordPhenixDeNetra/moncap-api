@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     public_files_path: str = "/files"
     public_base_url: str | None = None
     api_base_url: str | None = None
+    backend_public_base_url: str | None = Field(
+        default=None,
+        description="URL BASE du backend (Alwaysdata par ex : https://thior.alwaysdata.net). Utilisée notamment pour le contenu des QR permanents (SCAN caméra → GET backend PUBLIC). Si vide : on tente api_base_url puis fallback thior.alwaysdata.net.",
+    )
 
     mail_enabled: bool = False
     smtp_host: str | None = None
