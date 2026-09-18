@@ -175,6 +175,16 @@ class KoparClient:
                                 or first.get("code")
                                 or first.get("error_code")
                             )
+                    if isinstance(data, dict) and not kopar_code:
+                        kopar_code = (
+                            data.get("errorCode")
+                            or data.get("code")
+                            or data.get("error_code")
+                        )
+                    if isinstance(data, dict) and not kopar_code:
+                        s_val = data.get("status")
+                        if isinstance(s_val, str) and s_val.upper() not in {"SUCCESS", "PENDING", "NEW", "OK", "TRUE", "COMPLETED"}:
+                            kopar_code = s_val
                     details_avec_meta: dict = {}
                     if isinstance(err_details, dict):
                         details_avec_meta = dict(err_details)
@@ -346,10 +356,17 @@ class KoparClient:
         status = data.get("status")
         token = data.get("token")
         if not token or str(status).upper() != "SUCCESS":
+            kopar_err_code = (
+                data.get("errorCode")
+                or data.get("code")
+                or data.get("error_code")
+                or (status if isinstance(status, str) else None)
+            )
             raise KoparError(
                 data.get("message") or "Echec création transaction Kopar",
                 502,
                 data,
+                kopar_error_code=kopar_err_code,
             )
         payment_url = f"{self.base_url}/payment/orders/{token}"
         return KoparPaiementInitie(

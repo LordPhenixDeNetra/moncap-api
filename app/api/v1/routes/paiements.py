@@ -269,7 +269,8 @@ async def qr_paiement_direct_cotisation(
     await db.commit()
     payment_url = (initie.payment_url or "").strip()
     if not payment_url and initie.token:
-        payment_url = f"https://koparpay.com/payment/orders/{initie.token}"
+        kopar_base = (settings.kopar_base_url or "https://koparpay.com").rstrip("/")
+        payment_url = f"{kopar_base}/payment/orders/{initie.token}"
     if not payment_url:
         url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="paiement-indisponible")
         return RedirectResponse(url=url, status_code=302)

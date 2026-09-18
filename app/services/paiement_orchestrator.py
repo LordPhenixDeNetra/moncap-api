@@ -180,7 +180,7 @@ class PaiementOrchestratorService:
                         raw_url_adh = str(prev_adh.raw_response.get("paymentUrl") or prev_adh.raw_response.get("payment_url") or "").strip()
                 except Exception:
                     raw_url_adh = ""
-                prev_payment_url_adh = raw_url_adh or f"https://koparpay.com/payment/orders/{prev_adh.kopar_token}"
+                prev_payment_url_adh = raw_url_adh or f"{self.settings.kopar_base_url.rstrip('/')}/payment/orders/{prev_adh.kopar_token}"
                 return KoparPaiementInitie(
                     token=prev_adh.kopar_token,
                     payment_url=prev_payment_url_adh,
@@ -320,7 +320,7 @@ class PaiementOrchestratorService:
                         raw_url = str(prev.raw_response.get("paymentUrl") or prev.raw_response.get("payment_url") or "").strip()
                 except Exception:
                     raw_url = ""
-                prev_payment_url = raw_url or f"https://koparpay.com/payment/orders/{prev.kopar_token}"
+                prev_payment_url = raw_url or f"{self.settings.kopar_base_url.rstrip('/')}/payment/orders/{prev.kopar_token}"
                 return KoparPaiementInitie(
                     token=prev.kopar_token,
                     payment_url=prev_payment_url,
