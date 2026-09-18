@@ -67,8 +67,9 @@ def _to_comment_out(c, principal_id: uuid.UUID | None) -> ArticleCommentOut:
     )
 
 
-def _is_admin(principal: Principal) -> bool:
-    return AppRole.admin.value in principal.roles
+def _is_staff_articles(principal: Principal) -> bool:
+    roles = set(principal.roles or [])
+    return (AppRole.admin.value in roles) or (AppRole.moderateur.value in roles)
 
 
 # ------------------------------- PUBLIC ----------------------------------- #
@@ -250,7 +251,7 @@ async def get_article_owner(
     a = await ArticleService(db).get_owner_detail(
         article_id=article_id,
         principal_id=principal.user_id,
-        is_admin=_is_admin(principal),
+        is_admin=_is_staff_articles(principal),
     )
     return ArticleOut.model_validate(a)
 
@@ -331,7 +332,7 @@ async def update_article(
     updated = await ArticleService(db).update_article(
         article_id=article_id,
         principal_id=principal.user_id,
-        is_admin=_is_admin(principal),
+        is_admin=_is_staff_articles(principal),
         data=UpdateArticleInput(
             title=payload.title,
             summary=payload.summary,
@@ -360,7 +361,7 @@ async def delete_article(
     await ArticleService(db).delete_article(
         article_id=article_id,
         principal_id=principal.user_id,
-        is_admin=_is_admin(principal),
+        is_admin=_is_staff_articles(principal),
     )
     return {"data": {"deleted": True}}
 
@@ -405,7 +406,11 @@ async def my_like_status(
 ):
     svc = ArticleService(db)
     has_liked = await svc.has_liked(article_id=article_id, user_id=principal.user_id)
-    a = await svc.get_public_detail(article_id)
+    a = await svc.get_owner_detail(
+        article_id=article_id,
+        principal_id=principal.user_id,
+        is_admin=_is_staff_articles(principal),
+    )
     return LikeResponse(liked=has_liked, likes_count=int(a.likes_count or 0))
 
 
@@ -425,6 +430,7 @@ async def create_comment(
         author_id=principal.user_id,
         body=payload.body,
         parent_id=payload.parent_id,
+        principal_roles=list(principal.roles or []),
     )
     return _to_comment_out(c, principal.user_id)
 
@@ -443,7 +449,7 @@ async def update_comment(
     c = await ArticleService(db).update_comment(
         comment_id=comment_id,
         principal_id=principal.user_id,
-        is_admin=_is_admin(principal),
+        is_admin=_is_staff_articles(principal),
         body=payload.body,
     )
     return _to_comment_out(c, principal.user_id)
@@ -461,7 +467,7 @@ async def delete_comment(
     await ArticleService(db).delete_comment(
         comment_id=comment_id,
         principal_id=principal.user_id,
-        is_admin=_is_admin(principal),
+        is_admin=_is_staff_articles(principal),
     )
     return {"data": {"deleted": True}}
 

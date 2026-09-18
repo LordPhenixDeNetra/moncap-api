@@ -489,9 +489,14 @@ class ArticleService:
         author_id: uuid.UUID,
         body: str,
         parent_id: uuid.UUID | None,
+        principal_roles: list[str] | None = None,
     ) -> ArticleComment:
         article = await self.articles.get_by_id(article_id, include_deleted=False)
-        if not article or article.status != "published":
+        if not article:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Article introuvable"})
+        est_staff = self._is_privileged(principal_roles)
+        est_auteur = article.author_id == author_id
+        if not est_staff and not est_auteur and article.status != ArticleStatus.published.value:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Article introuvable"})
         if parent_id is not None:
             parent = await self.comments.get_by_id(parent_id)
