@@ -239,17 +239,35 @@ async def qr_paiement_direct_cotisation(
         initie = await orchestrator.initier_paiement_cotisation(cc.id, force=False, service=None)
     except KoparError as e:
         mapped = "paiement-indisponible"
-        if e.kopar_error_code and str(e.kopar_error_code).upper() == "NO_AUTH":
+        kcode_upper = (e.kopar_error_code or "").upper()
+        no_auth_codes = {
+            "NO_AUTH", "UNAUTHORIZED", "INVALID_API_KEY", "INVALID_CREDENTIALS",
+            "MERCHANT_NOT_ACTIVE", "MERCHANT_INACTIVE", "ACCOUNT_NOT_ACTIVATED",
+            "ACCOUNT_INACTIVE", "AUTH_FAILED", "AUTHENTICATION_FAILED",
+        }
+        invalid_amount_codes = {"INVALID_AMOUNT", "AMOUNT_TOO_LOW", "AMOUNT_TOO_HIGH", "INVALID_ITEM_PRICE"}
+        if kcode_upper in no_auth_codes:
             mapped = "kopar-no-auth"
-        elif e.kopar_error_code and str(e.kopar_error_code).upper() == "INVALID_AMOUNT":
+        elif kcode_upper in invalid_amount_codes:
             mapped = "kopar-montant-invalide"
+        kopar_http = None
+        if isinstance(e.details, dict):
+            kopar_http = e.details.get("_httpKoparStatusCode")
         await db.rollback()
-        url = _build_frontend_payer_cotisation_redirect(
-            settings,
-            adh=adh,
-            erreur=mapped,
-            kopar=str(e.kopar_error_code or ""),
-        )
+        redirect_kwargs: dict[str, Any] = {
+            "adh": adh,
+            "erreur": mapped,
+            "kopar": str(e.kopar_error_code or ""),
+        }
+        if kopar_http is not None:
+            redirect_kwargs["kopar_http"] = str(kopar_http)
+        if mapped == "paiement-indisponible" and not (e.kopar_error_code or "").strip():
+            logger.warning(
+                "[QR-PAIEMENT-DIRECT] Kopar erreur SANS code identifiable pour adhesion=%s cc=%s/%s — http=%s kopar_message=%s details_raw=%s",
+                str(adh), getattr(cc, "annee", None), getattr(cc, "mois", None),
+                kopar_http, e.message, str(e.details)[:800],
+            )
+        url = _build_frontend_payer_cotisation_redirect(settings, **redirect_kwargs)
         return RedirectResponse(url=url, status_code=302)
     except HTTPException:
         raise
