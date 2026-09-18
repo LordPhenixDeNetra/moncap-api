@@ -35,5 +35,14 @@ class AppRole(StrEnum):
     coordinateur_commissariat = "coordinateur_commissariat"
     coordinateur_regional = "coordinateur_regional"
     militant = "militant"
+    moderateur = "moderateur"
     user = "user"
+
+
+class ArticleStatus(StrEnum):
+    draft = "draft"
+    waiting_validation = "waiting_validation"
+    changes_requested = "changes_requested"
+    rejected = "rejected"
+    published = "published"
 

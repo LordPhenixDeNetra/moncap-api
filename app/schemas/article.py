@@ -7,6 +7,11 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from app.core.urls import to_absolute_public_url
+from app.models.enums import ArticleStatus
+
+
+_VALID_STATUSES_ALL = {e.value for e in ArticleStatus}
+_VALID_STATUSES_AUTHOR = {ArticleStatus.draft.value, ArticleStatus.waiting_validation.value}
 
 
 class ArticleAttachmentOut(BaseModel):
@@ -47,6 +52,9 @@ class ArticleOut(BaseModel):
     tags: list[str] | None = Field(default=None)
     author_id: uuid.UUID
     author: ArticleAuthorOut | None = None
+    validated_by_user_id: uuid.UUID | None = None
+    validated_at: datetime | None = None
+    validation_motif: str | None = None
     view_count: int
     likes_count: int
     comments_count: int
@@ -88,16 +96,16 @@ class ArticleCreatePayload(BaseModel):
     title: str = Field(min_length=3, max_length=255)
     summary: str | None = Field(default=None, max_length=500)
     body: str = Field(min_length=1)
-    status: str = "draft"
+    status: str = ArticleStatus.draft.value
     commissariat: str | None = None
     tags: list[str] | None = None
 
     @field_validator("status")
     @classmethod
     def _validate_status(cls, v: str) -> str:
-        allowed = {"draft", "published"}
-        if v not in allowed:
-            raise ValueError("status doit être 'draft' ou 'published'")
+        if v not in _VALID_STATUSES_ALL:
+            allowed = ", ".join(sorted(_VALID_STATUSES_ALL))
+            raise ValueError(f"status invalide. Valeurs autorisées : {allowed}")
         return v
 
 
@@ -115,10 +123,22 @@ class ArticleUpdatePayload(BaseModel):
     def _validate_status(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        allowed = {"draft", "published"}
-        if v not in allowed:
-            raise ValueError("status doit être 'draft' ou 'published'")
+        if v not in _VALID_STATUSES_ALL:
+            allowed = ", ".join(sorted(_VALID_STATUSES_ALL))
+            raise ValueError(f"status invalide. Valeurs autorisées : {allowed}")
         return v
+
+
+class ArticleApprovePayload(BaseModel):
+    commentaire: str | None = Field(default=None, max_length=2000)
+
+
+class ArticleRejectPayload(BaseModel):
+    motif: str = Field(min_length=5, max_length=2000)
+
+
+class ArticleChangesRequestedPayload(BaseModel):
+    motif: str = Field(min_length=5, max_length=2000)
 
 
 class ArticleCommentOut(BaseModel):

@@ -213,12 +213,14 @@ class ArticleRepository:
         author_id: uuid.UUID,
         page: int,
         page_size: int,
-        status: str | None,
+        status: str | list[str] | None,
         include_deleted: bool,
     ) -> tuple[list[Article], int]:
         where = [Article.author_id == author_id]
         if status:
-            where.append(Article.status == status)
+            statuses = [status] if isinstance(status, str) else status
+            if statuses:
+                where.append(Article.status.in_(statuses))
         if not include_deleted:
             where.append(Article.deleted_at.is_(None))
 
@@ -228,6 +230,36 @@ class ArticleRepository:
 
         offset = (page - 1) * page_size
         qy = base.order_by(desc(Article.updated_at), desc(Article.created_at)).limit(page_size).offset(offset).options(*self._base_loads())
+        items = list((await self.session.execute(qy)).scalars().all())
+        return items, int(total)
+
+    async def list_by_statuses(
+        self,
+        *,
+        statuses: list[str],
+        page: int,
+        page_size: int,
+        include_deleted: bool,
+    ) -> tuple[list[Article], int]:
+        where: list = []
+        if statuses:
+            where.append(Article.status.in_(list(statuses)))
+        else:
+            where.append(Article.status.is_(None))
+        if not include_deleted:
+            where.append(Article.deleted_at.is_(None))
+
+        base = select(Article).where(and_(*where))
+        count_q = select(func.count()).select_from(base.subquery())
+        total = (await self.session.execute(count_q)).scalar_one()
+
+        offset = (page - 1) * page_size
+        qy = (
+            base.order_by(desc(Article.created_at), desc(Article.updated_at))
+            .limit(page_size)
+            .offset(offset)
+            .options(*self._base_loads())
+        )
         items = list((await self.session.execute(qy)).scalars().all())
         return items, int(total)
 

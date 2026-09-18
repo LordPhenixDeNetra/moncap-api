@@ -10,6 +10,7 @@ from fastapi import HTTPException, UploadFile
 
 from app.core.settings import get_settings
 from app.models.article import Article, ArticleAttachment, ArticleComment
+from app.models.enums import AppRole, ArticleStatus
 from app.repositories.article import (
     ArticleCommentRepository,
     ArticleLikeRepository,
@@ -17,8 +18,9 @@ from app.repositories.article import (
 )
 from app.storage.local import LocalStorage
 
-
 _WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
+
+_VALID_STATUSES_ALL = {e.value for e in ArticleStatus}
 
 
 def _tokenize_query(q: str | None) -> list[str]:
@@ -40,6 +42,7 @@ class CreateArticleInput:
     commissariat: str | None
     tags: list[str] | None
     author_id: uuid.UUID
+    author_roles: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,7 @@ class UpdateArticleInput:
     commissariat: str | None
     tags: list[str] | None
     remove_attachment_ids: list[uuid.UUID] | None
+    principal_roles: list[str] | None = None
 
 
 class ArticleService:
@@ -61,6 +65,12 @@ class ArticleService:
         self.comments = ArticleCommentRepository(session)
         self.storage = LocalStorage()
         self.settings = get_settings()
+
+    @staticmethod
+    def _is_privileged(roles: list[str] | None) -> bool:
+        if not roles:
+            return False
+        return (AppRole.admin.value in roles) or (AppRole.moderateur.value in roles)
 
     def _parse_tags_as_list(self, value) -> list[str]:
         if value is None:
@@ -143,10 +153,10 @@ class ArticleService:
         cover: UploadFile | None,
         attachments: list[UploadFile] | None,
     ) -> Article:
-        if data.status == "published":
-            # On autorise la publication directe par militant; si on veut modération
-            # on pourra transformer "published" en "draft" ici côté service.
-            pass
+        effective_status = data.status
+        if not self._is_privileged(data.author_roles):
+            if effective_status in (ArticleStatus.published.value, ArticleStatus.rejected.value, ArticleStatus.changes_requested.value):
+                effective_status = ArticleStatus.waiting_validation.value
 
         if len(attachments or []) > self.settings.article_max_attachments:
             raise HTTPException(
@@ -183,16 +193,17 @@ class ArticleService:
         if cover is not None:
             cover_url = await self.storage.save(file=cover, subdir="articles/covers")
 
+        now = datetime.utcnow()
         article = Article(
             title=data.title.strip(),
             summary=(data.summary or "").strip() or None,
             body=data.body,
             cover_url=cover_url,
-            status=data.status,
+            status=effective_status,
             commissariat=(data.commissariat or "").strip() or None,
             tags=await self._tags_to_stored(data.tags),
             author_id=data.author_id,
-            published_at=datetime.utcnow() if data.status == "published" else None,
+            published_at=now if effective_status == ArticleStatus.published.value else None,
         )
         article = await self.articles.create(article)
 
@@ -364,8 +375,20 @@ class ArticleService:
         if data.body is not None:
             values["body"] = data.body
         if data.status is not None:
-            values["status"] = data.status
-            if data.status == "published" and article.published_at is None:
+            effective_status = data.status
+            if not self._is_privileged(data.principal_roles):
+                if data.status == ArticleStatus.published.value:
+                    effective_status = ArticleStatus.waiting_validation.value
+                elif data.status in (ArticleStatus.rejected.value, ArticleStatus.changes_requested.value):
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "FORBIDDEN_STATUS_CHANGE",
+                            "message": "Ce changement de statut est réservé aux modérateurs",
+                        },
+                    )
+            values["status"] = effective_status
+            if effective_status == ArticleStatus.published.value and article.published_at is None:
                 values["published_at"] = datetime.utcnow()
         if data.commissariat is not None:
             values["commissariat"] = (data.commissariat or "").strip() or None
@@ -525,3 +548,100 @@ class ArticleService:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Commentaire introuvable"})
         await self.articles.set_counters(article_id=c.article_id)
         await self.session.commit()
+
+    async def _get_for_moderation_or_404(self, article_id: uuid.UUID) -> Article:
+        article = await self.articles.get_by_id(article_id, include_deleted=True)
+        if not article:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Article introuvable"})
+        return article
+
+    async def approuver_article(
+        self,
+        *,
+        article_id: uuid.UUID,
+        validator_user_id: uuid.UUID,
+        commentaire: str | None = None,
+    ) -> Article:
+        article = await self._get_for_moderation_or_404(article_id)
+        now = datetime.utcnow()
+        values: dict[str, Any] = {
+            "status": ArticleStatus.published.value,
+            "published_at": article.published_at or now,
+            "validated_by_user_id": validator_user_id,
+            "validated_at": now,
+            "validation_motif": (commentaire or "").strip() or article.validation_motif,
+        }
+        await self.articles.update_fields(article_id=article.id, values=values)
+        await self.session.commit()
+        refreshed = await self.articles.get_by_id(article.id, include_deleted=True)
+        if not refreshed:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Article introuvable"})
+        return refreshed
+
+    async def rejeter_article(
+        self,
+        *,
+        article_id: uuid.UUID,
+        validator_user_id: uuid.UUID,
+        motif: str,
+    ) -> Article:
+        article = await self._get_for_moderation_or_404(article_id)
+        now = datetime.utcnow()
+        values: dict[str, Any] = {
+            "status": ArticleStatus.rejected.value,
+            "validated_by_user_id": validator_user_id,
+            "validated_at": now,
+            "validation_motif": motif.strip(),
+        }
+        await self.articles.update_fields(article_id=article.id, values=values)
+        await self.session.commit()
+        refreshed = await self.articles.get_by_id(article.id, include_deleted=True)
+        if not refreshed:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Article introuvable"})
+        return refreshed
+
+    async def demander_corrections_article(
+        self,
+        *,
+        article_id: uuid.UUID,
+        validator_user_id: uuid.UUID,
+        motif: str,
+    ) -> Article:
+        article = await self._get_for_moderation_or_404(article_id)
+        now = datetime.utcnow()
+        values: dict[str, Any] = {
+            "status": ArticleStatus.changes_requested.value,
+            "validated_by_user_id": validator_user_id,
+            "validated_at": now,
+            "validation_motif": motif.strip(),
+        }
+        await self.articles.update_fields(article_id=article.id, values=values)
+        await self.session.commit()
+        refreshed = await self.articles.get_by_id(article.id, include_deleted=True)
+        if not refreshed:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Article introuvable"})
+        return refreshed
+
+    async def list_moderation(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        status: list[str] | None = None,
+    ) -> tuple[list[Article], int]:
+        if page < 1:
+            page = 1
+        if page_size < 1 or page_size > 100:
+            page_size = min(max(page_size, 1), 100)
+        default_statuses = {
+            ArticleStatus.waiting_validation.value,
+            ArticleStatus.changes_requested.value,
+            ArticleStatus.rejected.value,
+        }
+        filter_statuses = [s for s in (status or []) if s in _VALID_STATUSES_ALL] or sorted(default_statuses)
+        return await self.articles.list_by_statuses(
+            statuses=filter_statuses,
+            page=page,
+            page_size=page_size,
+            include_deleted=False,
+        )

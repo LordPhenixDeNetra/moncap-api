@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.types import GUID
+from app.models.enums import ArticleStatus
 
 
 class Article(Base):
@@ -18,10 +19,19 @@ class Article(Base):
     summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
     body: Mapped[str] = mapped_column(Text)
     cover_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    status: Mapped[str] = mapped_column(String(50), default="draft", index=True)
+    status: Mapped[str] = mapped_column(
+        String(50), default=ArticleStatus.draft.value, index=True
+    )
     commissariat: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     tags: Mapped[list[str] | None] = mapped_column(Text, nullable=True)
     author_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    validated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    validation_motif: Mapped[str | None] = mapped_column(Text, nullable=True)
     view_count: Mapped[int] = mapped_column(BigInteger, default=0)
     likes_count: Mapped[int] = mapped_column(BigInteger, default=0)
     comments_count: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -32,7 +42,8 @@ class Article(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    author: Mapped["User"] = relationship("User")  # type: ignore[assignment]
+    author: Mapped["User"] = relationship("User", foreign_keys=[author_id])  # type: ignore[assignment]
+    validated_by: Mapped["User | None"] = relationship("User", foreign_keys=[validated_by_user_id])  # type: ignore[assignment]
     attachments: Mapped[list["ArticleAttachment"]] = relationship(
         back_populates="article", cascade="all, delete-orphan", order_by="ArticleAttachment.order"
     )

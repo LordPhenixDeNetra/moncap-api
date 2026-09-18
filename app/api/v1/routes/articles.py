@@ -11,19 +11,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, get_principal, require_roles
 from app.db.session import get_db
-from app.models.enums import AppRole
+from app.models.enums import AppRole, ArticleStatus
 from app.schemas.article import (
+    ArticleApprovePayload,
+    ArticleChangesRequestedPayload,
     ArticleCommentOut,
     ArticleCommentsResponse,
     ArticleCreatePayload,
     ArticleListResponse,
     ArticleOut,
+    ArticleRejectPayload,
     ArticleUpdatePayload,
     CommentCreatePayload,
     CommentUpdatePayload,
     LikeResponse,
 )
 from app.services.article import ArticleService, CreateArticleInput, UpdateArticleInput
+
+_VALID_ARTICLE_STATUSES = {e.value for e in ArticleStatus}
+_MODERATION_ROLES = (AppRole.admin.value, AppRole.moderateur.value)
 
 
 public_router = APIRouter(prefix="/articles", tags=["Articles"])
@@ -146,6 +152,7 @@ AUTHORIZED_ROLES = [
     "coordinateur_commissariat",
     "coordinateur_regional",
     "militant",
+    "moderateur",
 ]
 
 
@@ -175,7 +182,12 @@ def _parse_remove_ids(ids: str | None) -> list[uuid.UUID] | None:
         return [uuid.UUID(x.strip()) for x in ids.split(",") if x.strip()]
 
 
-_ALLOWED_ARTICLE_STATUS = {"draft", "published"}
+_ALLOWED_ARTICLE_STATUS = _VALID_ARTICLE_STATUSES
+
+_STATUS_HELP = (
+    "Filtrer par statut. Valeurs : draft | waiting_validation | "
+    "changes_requested | rejected | published (accepté multiple séparé par virgule)."
+)
 
 
 @mine_router.get(
@@ -186,30 +198,35 @@ _ALLOWED_ARTICLE_STATUS = {"draft", "published"}
 async def list_my_articles(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    status: str | None = Query(default=None, description="Filtrer par statut : draft | published"),
+    status: str | None = Query(default=None, description=_STATUS_HELP),
     include_deleted: bool = Query(False, description="Inclure les articles soft-deleted (admin)"),
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_db),
 ):
-    if status is not None and status not in _ALLOWED_ARTICLE_STATUS:
-        from app.core.errors import ServiceError, ErrorCode
+    statuses = _split_csv(status)
+    if statuses:
+        invalid = [s for s in statuses if s not in _VALID_ARTICLE_STATUSES]
+        if invalid:
+            from app.core.errors import ServiceError, ErrorCode
 
-        raise ServiceError(
-            ErrorCode.VALIDATION_ERROR,
-            "status invalide",
-            details=[
-                {
-                    "loc": "query.status",
-                    "msg": f"Doit être l'un de : {sorted(_ALLOWED_ARTICLE_STATUS)}",
-                    "type": "literal_error",
-                },
-            ],
-        )
+            raise ServiceError(
+                ErrorCode.VALIDATION_ERROR,
+                "status invalide",
+                details=[
+                    {
+                        "loc": "query.status",
+                        "msg": f"Doit être l'un de : {sorted(_VALID_ARTICLE_STATUSES)}",
+                        "type": "literal_error",
+                        "invalid": invalid,
+                    },
+                ],
+            )
+    status_filter: str | list[str] | None = statuses if statuses else None
     items, total = await ArticleService(db).list_owner(
         author_id=principal.user_id,
         page=page,
         page_size=page_size,
-        status=status,
+        status=status_filter,
         include_deleted=include_deleted,
     )
     return ArticleListResponse(
@@ -273,6 +290,7 @@ async def create_article(
             commissariat=payload.commissariat,
             tags=payload.tags,
             author_id=principal.user_id,
+            author_roles=list(principal.roles or []),
         ),
         cover=cover,
         attachments=attachments,
@@ -322,6 +340,7 @@ async def update_article(
             commissariat=payload.commissariat,
             tags=payload.tags,
             remove_attachment_ids=payload.remove_attachment_ids,
+            principal_roles=list(principal.roles or []),
         ),
         cover=cover,
         attachments=attachments,
@@ -445,3 +464,88 @@ async def delete_comment(
         is_admin=_is_admin(principal),
     )
     return {"data": {"deleted": True}}
+
+
+# ------------------------ MODERATION (admin / moderateur) ----------------- #
+
+
+@protected_router.get(
+    "/validation/file-d-attente",
+    response_model=ArticleListResponse,
+    dependencies=[Depends(require_roles(*_MODERATION_ROLES))],
+)
+async def list_articles_moderation(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    status: str | None = Query(default=None, description=_STATUS_HELP),
+    db: AsyncSession = Depends(get_db),
+):
+    statuses = [s for s in _split_csv(status) if s in _VALID_ARTICLE_STATUSES]
+    items, total = await ArticleService(db).list_moderation(
+        page=page,
+        page_size=page_size,
+        status=statuses or None,
+    )
+    return ArticleListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=[ArticleOut.model_validate(it) for it in items],
+    )
+
+
+@protected_router.post(
+    "/{article_id}/approuver",
+    response_model=ArticleOut,
+    dependencies=[Depends(require_roles(*_MODERATION_ROLES))],
+)
+async def approuver_article(
+    article_id: _ArticleIdPath,
+    payload: ArticleApprovePayload,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    updated = await ArticleService(db).approuver_article(
+        article_id=article_id,
+        validator_user_id=principal.user_id,
+        commentaire=payload.commentaire,
+    )
+    return ArticleOut.model_validate(updated)
+
+
+@protected_router.post(
+    "/{article_id}/rejeter",
+    response_model=ArticleOut,
+    dependencies=[Depends(require_roles(*_MODERATION_ROLES))],
+)
+async def rejeter_article(
+    article_id: _ArticleIdPath,
+    payload: ArticleRejectPayload,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    updated = await ArticleService(db).rejeter_article(
+        article_id=article_id,
+        validator_user_id=principal.user_id,
+        motif=payload.motif,
+    )
+    return ArticleOut.model_validate(updated)
+
+
+@protected_router.post(
+    "/{article_id}/demander-corrections",
+    response_model=ArticleOut,
+    dependencies=[Depends(require_roles(*_MODERATION_ROLES))],
+)
+async def demander_corrections_article(
+    article_id: _ArticleIdPath,
+    payload: ArticleChangesRequestedPayload,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    updated = await ArticleService(db).demander_corrections_article(
+        article_id=article_id,
+        validator_user_id=principal.user_id,
+        motif=payload.motif,
+    )
+    return ArticleOut.model_validate(updated)
