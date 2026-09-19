@@ -67,6 +67,8 @@ class MilitantLookupData(BaseModel):
     profile_photo_url: str | None = None
     commissariat: str
 
+    est_diaspora: bool = False
+
     region_domicile_id: uuid.UUID | None = None
     departement_domicile_id: uuid.UUID | None = None
     commune_domicile_id: uuid.UUID | None = None
@@ -77,6 +79,17 @@ class MilitantLookupData(BaseModel):
     departement_domicile: DepartementOut | None = None
     commune_domicile: CommuneOut | None = None
     pays_domicile: PaysOut | None = None
+
+    region_militantisme_id: uuid.UUID | None = None
+    departement_militantisme_id: uuid.UUID | None = None
+    commune_militantisme_id: uuid.UUID | None = None
+    pays_militantisme_id: uuid.UUID | None = None
+    ville_militantisme: str | None = None
+
+    region_militantisme: RegionOut | None = None
+    departement_militantisme: DepartementOut | None = None
+    commune_militantisme: CommuneOut | None = None
+    pays_militantisme: PaysOut | None = None
 
     @field_serializer("photo_url", "profile_photo_url")
     def _abs_urls(self, v: str | None) -> str | None:

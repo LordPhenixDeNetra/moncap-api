@@ -35,6 +35,10 @@ class GeoRepository:
         )
         return list(res.scalars().all())
 
+    async def get_pays(self, pays_id: uuid.UUID) -> Pays | None:
+        res = await self.session.execute(select(Pays).where(Pays.id == pays_id))
+        return res.scalar_one_or_none()
+
     async def get_region(self, region_id: uuid.UUID) -> Region | None:
         res = await self.session.execute(select(Region).where(Region.id == region_id))
         return res.scalar_one_or_none()

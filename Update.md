@@ -1,11 +1,107 @@
 # UPDATE MONCAP API — Journal des modifications
 
-Date : 19 septembre 2026 (3 modifications)  
+Date : 19 septembre 2026 (4 modifications)  
 Auteur : Session TRAE  
 Objets :
   [A] Mise en oeuvre de la règle « Le membre qui adhère ne paie pas le mois courant »
   [B] Résolution d'un bug 500 masqué sur création d'article (article créé + erreur HTTP 500)
   [C] Emails de notification sur les changements de statut des articles
+  [D] Hydratation GEO sur MilitantOut + endpoints GEO individuels GET /{id}
+
+---
+
+## [D] CARTE MEMBRE — Hydratation GEO sur endpoints militants + endpoints GET /geo/{id} individuels
+
+### Demande (dev frontend)
+La carte membre (3 pages frontend : `/espace-membre/carte`, `/admin/carte-membre`, `/suivi` dossier public) affiche **vide** pour les cases Département / Commune. Cause :
+1. Endpoints renvoyant `MilitantOut` n'avaient **que les `*_id`** et les champs géo du DOMICILE ; manquaient `region_militantisme`, `departement_militantisme`, `commune_militantisme`, `pays_militantisme`, `est_diaspora`, `ville_militantisme` (champs utilisés **vraiment** sur la carte).
+2. Il n'y avait **pas** d'endpoints individuels GET `/geo/pays/{id}`, `/geo/regions/{id}`, `/geo/departements/{id}`, `/geo/communes/{id}` pour résoudre les `*_id` en nom quand le frontend veut faire un fetch séparé.
+3. P2 (hub diaspora) : pas de modèle HubDiaspora en BDD → différé.
+
+### Ordre de priorité appliqué (OK)
+1. ✅ **P0 = Hydratation DepartementOut / CommuneOut / PaysOut / RegionOut sur MilitantOut**
+2. ✅ **P1 = 4 endpoints GET /geo/{pays,regions,departements,communes}/{id} (singulier)**
+3. ⏳ P2 = Hubs diaspora → différé (pas de modèle ni table HubDiaspora)
+
+### Correctifs P0 (hydratation systématique des objets GEO)
+**Important : le eager-load des 8 relations geo (`region_domicile`, `departement_domicile`, `commune_domicile`, `pays_domicile`, + 4 `_militantisme`) était DÉJÀ codé dans `MilitantsRepository._with_geo()` ([militants.py repo L23-L33](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/repositories/militants.py#L23-L33)) et appliqué sur `lookup_validated`. Le bug n'était PAS au niveau ORM, mais sur (a) les schémas Pydantic qui n'avaient que la moitié des champs, et (b) les payloads dict construits à la main dans les routes.**
+
+#### D1 — Schéma `MilitantLookupData` (réponse `GET/POST /militants/lookup`)
+Fichier : [schemas/militants.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/militants.py)  
+Ajouté L70-L92 dans `MilitantLookupData` (champs existants `_domicile` laissés intacts) :
+```
+est_diaspora: bool = False
+region_militantisme_id / departement_militantisme_id / commune_militantisme_id
+pays_militantisme_id, ville_militantisme
+region_militantisme: RegionOut | None / departement_militantisme / commune_militantisme / pays_militantisme
+```
+
+#### D2 — Payload route `lookup_militant` (public + admin recherche)
+Fichier : [routes/militants.py L184-L215](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/militants.py#L184-L215)  
+Dict retourné par `return {"data": {...}}` : complété avec les 11 nouveaux champs (id + objet hydrated) + `est_diaspora` + `ville_militantisme`.
+
+#### D3 — Schéma `MilitantProfileLink` (réponse `GET /auth/me → user.militant`)
+Fichier : [schemas/auth.py L24-L63](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/auth.py#L24-L63)  
+Ajout : tous les `*_id` + objets hydrated `RegionOut/DepartementOut/CommuneOut/PaysOut` pour **DOMICILE et MILITANTISME**, `est_diaspora`, `ville_domicile`, `ville_militantisme`. Import des schemas geo ajouté.
+
+#### D4 — Payload route `/auth/me`
+Fichier : [routes/auth.py L109-L144](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/auth.py#L109-L144)  
+Anciennement : chargeait `user.adhesion` parfois via `selectinload(User.adhesion)` (qui **NE eager-loaded PAS les relations geo** — risque de DetachedInstanceError). Nouveau flow :
+1. `if getattr(user, "adhesion_id", None) is not None:`
+2. Toujours **re-fetch via `AdhesionRepository.get_by_id()`** → utilise `_with_geo()` avec 8 relations geo eager-loadées
+3. Dict `militant` inclut **tous les champs geo** (2 axes), plus `est_diaspora`, `ville_domicile`, `ville_militantisme`.
+
+#### Couverture endpoints (demande 2 dev front — tous OK)
+| Endpoint | Hydratation geo | Statut |
+|---|---|---|
+| `GET /militants/lookup` (recherche admin + suivi public) | Tous 4 axes + est_diaspora + villes | ✅ D1+D2 |
+| `GET /auth/me → data.militant` (espace membre `/espace-membre/carte`) | Tous 4 axes | ✅ D3+D4 |
+| `GET /adhesions?email=` (suivi liste statuts) | `{id,statut,createdAt,motifRejet}` seulement → c'est une liste de suivi simple, intentionnellement allégée | RAS |
+| `PATCH /admin/adhesions/{id}/info` | Retourne `AdhesionDetailResponse` → `AdhesionDetailOut` a TOUS les champs geo depuis le début | RAS (déjà OK) |
+
+### Correctifs P1 (endpoints GET /geo/.../{id} individuels)
+
+#### D5 — Schema singularisés (wrapper `{"data": XxxOut}`)
+Fichier : [schemas/geo.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/geo.py)  
+Ajoutés :
+```
+PaysOutResponse        # data: PaysOut
+RegionOutResponse      # data: RegionOut
+DepartementOutResponse # data: DepartementOut
+CommuneOutResponse     # data: CommuneOut
+```
+
+#### D6 — Repo geo `get_pays()` manquant
+Fichier : [repositories/geo.py L38-L40](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/repositories/geo.py#L38-L40)  
+Les helpers `get_region / get_departement / get_commune` existaient déjà. Il manquait **seulement** `get_pays(pays_id)`. Ajouté.
+
+#### D7 — Routes geo : 4 nouveaux endpoints
+Fichier : [routes/geo.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/geo.py)  
+4 nouvelles routes, toutes `response_model` avec wrapper `{"data": ...}`, `404 HTTPException` si ID introuvable :
+
+| Endpoint | Schema réponse |
+|---|---|
+| `GET /api/v1/geo/pays/{pays_id}` | `PaysOutResponse` |
+| `GET /api/v1/geo/regions/{region_id}` | `RegionOutResponse` |
+| `GET /api/v1/geo/departements/{departement_id}` | `DepartementOutResponse` |
+| `GET /api/v1/geo/communes/{commune_id}` | `CommuneOutResponse` |
+
+**Remarque dev front :** pas d'endpoint `/referentiels/pays/{id}` ou `/pays/{id}` ailleurs dans l'API → tout est centralisé sous `/geo/...` comme attendu.
+
+### Correctifs P2 — Hub diaspora
+- **Statut : différé (pas de modèle ni table HubDiaspora en BDD).**
+- Recherche codebase `HubDiaspora | hub_diaspora | hub-diaspora` → 0 résultat ([Grep de contrôle](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app)).
+- Action nécessaire pour activer ultérieurement : (1) créer modèle `HubDiaspora` + migration Alembic, (2) FK `adhesion.hub_diaspora_id`, (3) relation ORM + `_with_geo()`, (4) schemas `HubDiasporaOut` + endpoints `/geo/hubs-diaspora[/{id}]`, (5) champ `hub_diaspora` sur `MilitantLookupData` + `MilitantProfileLink`.
+
+### Vérifications
+```
+python -m poetry run python -m compileall -q app/schemas/militants.py app/schemas/auth.py app/schemas/geo.py \
+  app/api/v1/routes/militants.py app/api/v1/routes/auth.py app/api/v1/routes/geo.py app/repositories/geo.py
+# → exit_code 0 ; aucune erreur syntaxe
+```
+- **Aucune migration Alembic requise** (aucun nouveau champ / FK / table).
+- **Rétrocompatibilité front 100 %** : ce sont des CHAMPS AJOUTÉS, jamais renommés / retirés. Les anciens consommateurs de `/auth/me` ne voient que des champs en plus.
+- **Pas de nouveau `.env` / setting.**
 
 ---
 

@@ -107,23 +107,41 @@ async def me(principal: Principal = Depends(get_principal), db: AsyncSession = D
         raise HTTPException(status_code=401, detail="Utilisateur introuvable")
 
     militant = None
-    adhesion = getattr(user, "adhesion", None)
-    if adhesion is None and getattr(user, "adhesion_id", None) is not None:
+    if getattr(user, "adhesion_id", None) is not None:
         adhesion = await AdhesionRepository(db).get_by_id(user.adhesion_id)  # type: ignore[arg-type]
-    if adhesion is not None:
-        militant = {
-            "adhesion_id": adhesion.id,
-            "nom": adhesion.nom,
-            "prenom": adhesion.prenom,
-            "cni": adhesion.cni,
-            "carte_pastef": adhesion.carte_pastef,
-            "commissariat": adhesion.commissariat,
-            "commissariat_scientifique_principal": adhesion.commissariat_scientifique_principal,
-            "commissariat_scientifique_secondaire": adhesion.commissariat_scientifique_secondaire,
-            "profile_photo_url": adhesion.profile_photo_url,
-            "photo_url": adhesion.photo_url,
-            "tel_mobile": adhesion.tel_mobile,
-        }
+        if adhesion is not None:
+            militant = {
+                "adhesion_id": adhesion.id,
+                "nom": adhesion.nom,
+                "prenom": adhesion.prenom,
+                "cni": adhesion.cni,
+                "carte_pastef": adhesion.carte_pastef,
+                "commissariat": adhesion.commissariat,
+                "commissariat_scientifique_principal": adhesion.commissariat_scientifique_principal,
+                "commissariat_scientifique_secondaire": adhesion.commissariat_scientifique_secondaire,
+                "profile_photo_url": adhesion.profile_photo_url,
+                "photo_url": adhesion.photo_url,
+                "tel_mobile": adhesion.tel_mobile,
+                "est_diaspora": adhesion.est_diaspora,
+                "region_domicile_id": adhesion.region_domicile_id,
+                "departement_domicile_id": adhesion.departement_domicile_id,
+                "commune_domicile_id": adhesion.commune_domicile_id,
+                "pays_domicile_id": adhesion.pays_domicile_id,
+                "ville_domicile": adhesion.ville_domicile,
+                "region_domicile": adhesion.region_domicile,
+                "departement_domicile": adhesion.departement_domicile,
+                "commune_domicile": adhesion.commune_domicile,
+                "pays_domicile": adhesion.pays_domicile,
+                "region_militantisme_id": adhesion.region_militantisme_id,
+                "departement_militantisme_id": adhesion.departement_militantisme_id,
+                "commune_militantisme_id": adhesion.commune_militantisme_id,
+                "pays_militantisme_id": adhesion.pays_militantisme_id,
+                "ville_militantisme": adhesion.ville_militantisme,
+                "region_militantisme": adhesion.region_militantisme,
+                "departement_militantisme": adhesion.departement_militantisme,
+                "commune_militantisme": adhesion.commune_militantisme,
+                "pays_militantisme": adhesion.pays_militantisme,
+            }
 
     return {
         "data": {

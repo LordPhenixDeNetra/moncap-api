@@ -37,13 +37,29 @@ class PaysResponse(BaseModel):
     data: list[PaysOut]
 
 
+class PaysOutResponse(BaseModel):
+    data: PaysOut
+
+
 class RegionsResponse(BaseModel):
     data: list[RegionOut]
+
+
+class RegionOutResponse(BaseModel):
+    data: RegionOut
 
 
 class DepartementsResponse(BaseModel):
     data: list[DepartementOut]
 
 
+class DepartementOutResponse(BaseModel):
+    data: DepartementOut
+
+
 class CommunesResponse(BaseModel):
     data: list[CommuneOut]
+
+
+class CommuneOutResponse(BaseModel):
+    data: CommuneOut

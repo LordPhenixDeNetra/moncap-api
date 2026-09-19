@@ -193,6 +193,7 @@ async def lookup_militant(
             "photo_url": adhesion.photo_url,
             "profile_photo_url": adhesion.profile_photo_url,
             "commissariat": adhesion.commissariat,
+            "est_diaspora": adhesion.est_diaspora,
             "region_domicile_id": adhesion.region_domicile_id,
             "departement_domicile_id": adhesion.departement_domicile_id,
             "commune_domicile_id": adhesion.commune_domicile_id,
@@ -202,5 +203,14 @@ async def lookup_militant(
             "departement_domicile": adhesion.departement_domicile,
             "commune_domicile": adhesion.commune_domicile,
             "pays_domicile": adhesion.pays_domicile,
+            "region_militantisme_id": adhesion.region_militantisme_id,
+            "departement_militantisme_id": adhesion.departement_militantisme_id,
+            "commune_militantisme_id": adhesion.commune_militantisme_id,
+            "pays_militantisme_id": adhesion.pays_militantisme_id,
+            "ville_militantisme": adhesion.ville_militantisme,
+            "region_militantisme": adhesion.region_militantisme,
+            "departement_militantisme": adhesion.departement_militantisme,
+            "commune_militantisme": adhesion.commune_militantisme,
+            "pays_militantisme": adhesion.pays_militantisme,
         }
     }
