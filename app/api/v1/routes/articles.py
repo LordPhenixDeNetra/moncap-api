@@ -6,12 +6,14 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Path, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Path, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, get_principal, require_roles
+from app.core.settings import get_settings
 from app.db.session import get_db
 from app.models.enums import AppRole, ArticleStatus
+from app.repositories.users import UserRepository
 from app.schemas.article import (
     ArticleApprovePayload,
     ArticleChangesRequestedPayload,
@@ -27,9 +29,19 @@ from app.schemas.article import (
     LikeResponse,
 )
 from app.services.article import ArticleService, CreateArticleInput, UpdateArticleInput
+from app.services.article_mail_templates import (
+    build_article_changes_requested,
+    build_article_published,
+    build_article_rejected,
+    build_article_resubmitted_after_feedback,
+    build_article_submitted_for_validation,
+    resolve_author_email,
+)
+from app.services.mail import send_email_best_effort
 
 _VALID_ARTICLE_STATUSES = {e.value for e in ArticleStatus}
 _MODERATION_ROLES = (AppRole.admin.value, AppRole.moderateur.value)
+_FEEDBACK_PREV_STATUSES = {ArticleStatus.rejected.value, ArticleStatus.changes_requested.value}
 
 
 public_router = APIRouter(prefix="/articles", tags=["Articles"])
@@ -262,6 +274,7 @@ async def get_article_owner(
     dependencies=[Depends(require_roles(*AUTHORIZED_ROLES))],
 )
 async def create_article(
+    background_tasks: BackgroundTasks,
     title: Annotated[str, Form(..., min_length=3, max_length=255)],
     body: Annotated[str, Form(..., min_length=1)],
     summary: Annotated[str | None, Form(max_length=500)] = None,
@@ -296,6 +309,23 @@ async def create_article(
         cover=cover,
         attachments=attachments,
     )
+    new_status = str(art.status)
+    settings = get_settings()
+    if settings.mail_enabled and new_status == ArticleStatus.waiting_validation.value:
+        author_email = resolve_author_email(art)
+        if author_email:
+            subject, text, html = build_article_submitted_for_validation(
+                article=art,
+                base_url=settings.public_base_url,
+            )
+            background_tasks.add_task(
+                send_email_best_effort,
+                to=author_email,
+                subject=subject,
+                text=text,
+                html=html,
+                settings=settings,
+            )
     return ArticleOut.model_validate(art)
 
 
@@ -305,6 +335,7 @@ async def create_article(
     dependencies=[Depends(require_roles(*AUTHORIZED_ROLES))],
 )
 async def update_article(
+    background_tasks: BackgroundTasks,
     article_id: _ArticleIdPath,
     title: Annotated[str | None, Form(min_length=3, max_length=255)] = None,
     body: Annotated[str | None, Form(min_length=1)] = None,
@@ -329,6 +360,12 @@ async def update_article(
         tags=tags_list,
         remove_attachment_ids=remove_ids,
     )
+    before = await ArticleService(db).get_owner_detail(
+        article_id=article_id,
+        principal_id=principal.user_id,
+        is_admin=_is_staff_articles(principal),
+    )
+    before_status = str(before.status) if before and getattr(before, "status", None) else None
     updated = await ArticleService(db).update_article(
         article_id=article_id,
         principal_id=principal.user_id,
@@ -346,6 +383,40 @@ async def update_article(
         cover=cover,
         attachments=attachments,
     )
+    new_status = str(updated.status)
+    settings = get_settings()
+    if settings.mail_enabled and before_status != new_status:
+        if new_status == ArticleStatus.waiting_validation.value:
+            author_email = resolve_author_email(updated)
+            if before_status in _FEEDBACK_PREV_STATUSES:
+                staff_emails: list[str] = await UserRepository(db).list_staff_emails()
+                if staff_emails:
+                    subject, text, html = build_article_resubmitted_after_feedback(
+                        article=updated,
+                        base_url=settings.public_base_url,
+                    )
+                    for to_email in staff_emails:
+                        background_tasks.add_task(
+                            send_email_best_effort,
+                            to=to_email,
+                            subject=subject,
+                            text=text,
+                            html=html,
+                            settings=settings,
+                        )
+            if author_email:
+                subject, text, html = build_article_submitted_for_validation(
+                    article=updated,
+                    base_url=settings.public_base_url,
+                )
+                background_tasks.add_task(
+                    send_email_best_effort,
+                    to=author_email,
+                    subject=subject,
+                    text=text,
+                    html=html,
+                    settings=settings,
+                )
     return ArticleOut.model_validate(updated)
 
 
@@ -506,6 +577,7 @@ async def list_articles_moderation(
     dependencies=[Depends(require_roles(*_MODERATION_ROLES))],
 )
 async def approuver_article(
+    background_tasks: BackgroundTasks,
     article_id: _ArticleIdPath,
     payload: ArticleApprovePayload,
     principal: Principal = Depends(get_principal),
@@ -516,6 +588,28 @@ async def approuver_article(
         validator_user_id=principal.user_id,
         commentaire=payload.commentaire,
     )
+    settings = get_settings()
+    if settings.mail_enabled:
+        author_email = resolve_author_email(updated)
+        if author_email:
+            validator = await UserRepository(db).get_by_id(principal.user_id)
+            validator_name: str | None = None
+            if validator is not None:
+                parts = [getattr(validator, "prenom", None), getattr(validator, "nom", None)]
+                validator_name = " ".join([x for x in parts if x]).strip() or None
+            subject, text, html = build_article_published(
+                article=updated,
+                base_url=settings.public_base_url,
+                validator_name=validator_name,
+            )
+            background_tasks.add_task(
+                send_email_best_effort,
+                to=author_email,
+                subject=subject,
+                text=text,
+                html=html,
+                settings=settings,
+            )
     return ArticleOut.model_validate(updated)
 
 
@@ -525,6 +619,7 @@ async def approuver_article(
     dependencies=[Depends(require_roles(*_MODERATION_ROLES))],
 )
 async def rejeter_article(
+    background_tasks: BackgroundTasks,
     article_id: _ArticleIdPath,
     payload: ArticleRejectPayload,
     principal: Principal = Depends(get_principal),
@@ -535,6 +630,28 @@ async def rejeter_article(
         validator_user_id=principal.user_id,
         motif=payload.motif,
     )
+    settings = get_settings()
+    if settings.mail_enabled:
+        author_email = resolve_author_email(updated)
+        if author_email:
+            validator = await UserRepository(db).get_by_id(principal.user_id)
+            validator_name: str | None = None
+            if validator is not None:
+                parts = [getattr(validator, "prenom", None), getattr(validator, "nom", None)]
+                validator_name = " ".join([x for x in parts if x]).strip() or None
+            subject, text, html = build_article_rejected(
+                article=updated,
+                base_url=settings.public_base_url,
+                validator_name=validator_name,
+            )
+            background_tasks.add_task(
+                send_email_best_effort,
+                to=author_email,
+                subject=subject,
+                text=text,
+                html=html,
+                settings=settings,
+            )
     return ArticleOut.model_validate(updated)
 
 
@@ -544,6 +661,7 @@ async def rejeter_article(
     dependencies=[Depends(require_roles(*_MODERATION_ROLES))],
 )
 async def demander_corrections_article(
+    background_tasks: BackgroundTasks,
     article_id: _ArticleIdPath,
     payload: ArticleChangesRequestedPayload,
     principal: Principal = Depends(get_principal),
@@ -554,4 +672,26 @@ async def demander_corrections_article(
         validator_user_id=principal.user_id,
         motif=payload.motif,
     )
+    settings = get_settings()
+    if settings.mail_enabled:
+        author_email = resolve_author_email(updated)
+        if author_email:
+            validator = await UserRepository(db).get_by_id(principal.user_id)
+            validator_name: str | None = None
+            if validator is not None:
+                parts = [getattr(validator, "prenom", None), getattr(validator, "nom", None)]
+                validator_name = " ".join([x for x in parts if x]).strip() or None
+            subject, text, html = build_article_changes_requested(
+                article=updated,
+                base_url=settings.public_base_url,
+                validator_name=validator_name,
+            )
+            background_tasks.add_task(
+                send_email_best_effort,
+                to=author_email,
+                subject=subject,
+                text=text,
+                html=html,
+                settings=settings,
+            )
     return ArticleOut.model_validate(updated)

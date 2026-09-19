@@ -1,10 +1,69 @@
 # UPDATE MONCAP API — Journal des modifications
 
-Date : 19 septembre 2026 (2 modifications)  
+Date : 19 septembre 2026 (3 modifications)  
 Auteur : Session TRAE  
 Objets :
   [A] Mise en oeuvre de la règle « Le membre qui adhère ne paie pas le mois courant »
   [B] Résolution d'un bug 500 masqué sur création d'article (article créé + erreur HTTP 500)
+  [C] Emails de notification sur les changements de statut des articles
+
+---
+
+## [C] NOUVEAUTÉ — Emails de notification sur les statuts d'articles
+
+### But
+Pour chaque **changement de statut** d'un article, un email est envoyé **à l'auteur de l'article** (détenteur du compte User lié à `article.author_id`).  
+Cas particulier : quand l'auteur **re-soumettra** son article après un rejet ou une demande de corrections, un email est envoyé **à TOUT le staff de modération** (admins + modérateurs) pour notification dans la file d'attente.
+
+### Activation / Désactivation
+- **Globale** : toggle `mail_enabled=true/false` dans `.env` (défaut = `false`). Si `false`, **aucun email n'est envoyé, aucune erreur, aucun log** (pattern `send_email_best_effort`).
+- **SMTP** : `smtp_host`, `smtp_port`, `smtp_use_tls/ssl`, `smtp_username/password`, `mail_from`, `mail_from_name` (même config que les mails adhésions/paiements).
+
+### Configuration emails STAFF (destinataires notifications resoumission)
+Pas de variable `.env` ajoutée. La liste est **dynamique via BDD** (source de vérité = rôles des utilisateurs) :
+- Requête : `SELECT DISTINCT email FROM users u JOIN user_roles r ON r.user_id=u.id WHERE r.role IN ('admin','moderateur')`
+- Helper : `UserRepository.list_staff_emails()` ([users.py L76-L102](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/repositories/users.py#L76-L102))
+- Cas limites : emails vides / nulls filtrés ; doublons supprimés (insensible à la casse).
+
+### Destinataire AUTEUR (résolution email)
+1. `article.author.email` via relation `Article.author` (eager-loadée par `ArticleRepository.get_by_id` → `selectinload(Article.author)`, donc pas de lazy-load hors session).
+2. Helper : `resolve_author_email(article)` dans [article_mail_templates.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article_mail_templates.py).
+3. Si email absent → **envoi silencieusement ignoré** (pas d'erreur HTTP, pas d'exception).
+
+### Transitions déclenchant un email
+
+| # | Endpoint (route) | Trigger (changement statut) | Destinataire | Template utilisé |
+|---|---|---|---|---|
+| C1 | `POST /api/v1/articles` (création) | statut final = `waiting_validation` | auteur | [build_article_submitted_for_validation](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article_mail_templates.py#L69-L125) |
+| C2 | `PATCH /api/v1/articles/{id}` (édition) | `avant → waiting_validation` **ET** `avant != waiting_validation` | auteur | idem C1 |
+| C3 | `PATCH /api/v1/articles/{id}` (édition) | `avant ∈ {rejected, changes_requested} → waiting_validation` (resoumission après feedback) | **staff (admins + moderateurs)** | [build_article_resubmitted_after_feedback](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article_mail_templates.py#L259-L320) — envoi UN mail PAR destinataire via `BackgroundTasks` |
+| C4 | `POST /api/v1/articles/{id}/approuver` | `X → published` | auteur | [build_article_published](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article_mail_templates.py#L128-L182) — inclut nom du modérateur + motif (commentaire) si fourni |
+| C5 | `POST /api/v1/articles/{id}/rejeter` | `X → rejected` | auteur | [build_article_rejected](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article_mail_templates.py#L185-L234) — inclut **toujours** le `validation_motif` |
+| C6 | `POST /api/v1/articles/{id}/demander-corrections` | `X → changes_requested` | auteur | [build_article_changes_requested](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article_mail_templates.py#L237-L296) — inclut **toujours** le `validation_motif` |
+
+Les status `draft` / transitions sans changement de statut → **aucun email** (pas d'annonce pour un brouillon).
+
+### Contenu / Format des emails
+- **Format** : toujours `subject` (prefix `[MONCAP]`) + version texte brut (`text`) + version HTML (`html`) léger (pas de logo ni QR code).
+- **Champs inclus par email auteur** : titre article, résumé, statut, lien espace auteur, lien public (si publié), commissariat, nom/email du modérateur ayant agi (si applicable).
+- **Champs inclus par email staff** : titre article, nom auteur, commissariat, lien vers la file d'attente modération (`/admin/articles/validation`).
+
+### Robustesse / Non-régression
+- **Exécution hors cycle requête** : tous les envois sont poussés dans `FastAPI.BackgroundTasks.add_task(send_email_best_effort, ...)` → jamais de blocage de la réponse HTTP, jamais de 500 si SMTP timeout / down.
+- **Gestion d'échec** : `send_email_best_effort` attrape **toutes** exceptions et retourne silencieusement → la création/modification d'article **jamais impactée** par un mail en échec.
+- **Déclenchement APRÈS commit** : les lectures (email du validator via `UserRepository.get_by_id`, staff emails via `list_staff_emails`) sont faites **après** un `commit` réussi + relecture ORM → emails toujours sur l'état final réellement écrit en base.
+
+### Fichiers modifiés / ajoutés
+| Fichier | Type | Rôle |
+|---|---|---|
+| [app/services/article_mail_templates.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/article_mail_templates.py) | NOUVEAU | 5 templates emails + helpers `resolve_author_email`, `_status_label`, génération liens public/owner/modération. |
+| [app/repositories/users.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/repositories/users.py#L76-L102) | ÉVOLUTION | `list_staff_emails(roles=None)` → emails uniques des admins/modérateurs. |
+| [app/api/v1/routes/articles.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/articles.py) | ÉVOLUTION | Ajout paramètre `background_tasks: BackgroundTasks` sur les 5 endpoints concernés (C1, C2, C4, C5, C6) + trigger conditionnel selon transition statut après commit. |
+
+### Vérifications
+- `python -m compileall` sur les fichiers modifiés → **0 erreur syntaxe**.
+- Aucune migration Alembic nécessaire (pas de colonne/table nouvelle : la relation `author` sur `ArticleComment` est ORM-only ajoutée [B] + nouvelle méthode query helper `list_staff_emails`).
+- Rétro-compatibilité front : **100%** (aucun changement de schéma entrée/sortie des endpoints ; seuls des effets de bord `BackgroundTasks` sont ajoutés).
 
 ---
 

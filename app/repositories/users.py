@@ -72,3 +72,31 @@ class UserRepository:
             select(User).options(selectinload(User.roles)).order_by(User.created_at)
         )
         return list(res.scalars().unique().all())
+
+    async def list_staff_emails(self, *, roles: list[str] | None = None) -> list[str]:
+        """Retourne la liste des emails uniques d'utilisateurs ayant au moins un des rôles demandés.
+
+        Rôles par défaut : admin + moderateur (équipe de modération articles).
+        """
+        import sqlalchemy as sa
+
+        wanted_roles: list[str] = [r for r in roles] if roles else [AppRole.admin.value, AppRole.moderateur.value]
+        if not wanted_roles:
+            return []
+        q = (
+            sa.select(sa.distinct(User.email))
+            .join(UserRole, UserRole.user_id == User.id)
+            .where(User.email.is_not(None))
+            .where(User.email != "")
+            .where(UserRole.role.in_(wanted_roles))
+        )
+        res = await self.session.execute(q)
+        rows = [r for (r,) in res.all() if r and str(r).strip()]
+        seen: set[str] = set()
+        out: list[str] = []
+        for r in rows:
+            e = str(r).strip().lower()
+            if e and e not in seen:
+                seen.add(e)
+                out.append(str(r).strip())
+        return out
