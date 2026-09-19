@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Annotated, Any, List
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
-from typing import Annotated, List
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import normalize_email
@@ -20,6 +22,71 @@ from app.services.mail import send_email_best_effort
 from app.services.paiements import ParametresPaiementService
 
 router = APIRouter(prefix="/adhesions")
+
+
+PASTEF_VALIDATE_URL = "https://app.pastef.org/api/member/validate"
+PASTEF_HTTP_TIMEOUT = 10.0
+
+
+class CartePastefCheckRequest(BaseModel):
+    carte_pastef: str | None = None
+    memberCardNumber: str | None = None
+
+
+@router.post(
+    "/verifier-carte-pastef",
+    status_code=200,
+    summary="Vérifier une carte PASTEF via proxy interne (sans CORS)",
+    description="Proxy interne vers https://app.pastef.org/api/member/validate. Accepte champ 'carte_pastef' ou 'memberCardNumber'. Retourne le JSON de Pastef tel quel pour compatibilité front.",
+)
+async def verifier_carte_pastef(payload: CartePastefCheckRequest) -> dict[str, Any]:
+    numero = (
+        (payload.carte_pastef or "").strip().upper()
+        or (payload.memberCardNumber or "").strip().upper()
+    )
+
+    if len(numero) < 5:
+        return {
+            "success": True,
+            "data": {
+                "valid": False,
+                "message": "Numéro de carte trop court (5 caractères minimum).",
+            },
+        }
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(PASTEF_HTTP_TIMEOUT)) as client:
+            resp = await client.post(
+                PASTEF_VALIDATE_URL,
+                json={"memberCardNumber": numero},
+            )
+    except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+        return {
+            "success": False,
+            "data": {
+                "valid": False,
+                "message": (
+                    f"Service PASTEF indisponible ({type(exc).__name__})."
+                    " Réessayez dans quelques instants ou contactez un administrateur."
+                ),
+            },
+        }
+
+    try:
+        pastef_json = resp.json()
+    except ValueError:
+        return {
+            "success": False,
+            "data": {
+                "valid": False,
+                "message": (
+                    f"Réponse invalide de l'API PASTEF (HTTP {resp.status_code})."
+                    " Contactez un administrateur."
+                ),
+            },
+        }
+
+    return pastef_json
 
 
 @router.post(
