@@ -24,10 +24,6 @@ from app.services.paiements import ParametresPaiementService
 router = APIRouter(prefix="/adhesions")
 
 
-PASTEF_VALIDATE_URL = "https://app.pastef.org/api/member/validate"
-PASTEF_HTTP_TIMEOUT = 10.0
-
-
 class CartePastefCheckRequest(BaseModel):
     carte_pastef: str | None = None
     memberCardNumber: str | None = None
@@ -37,9 +33,12 @@ class CartePastefCheckRequest(BaseModel):
     "/verifier-carte-pastef",
     status_code=200,
     summary="Vérifier une carte PASTEF via proxy interne (sans CORS)",
-    description="Proxy interne vers https://app.pastef.org/api/member/validate. Accepte champ 'carte_pastef' ou 'memberCardNumber'. Retourne le JSON de Pastef tel quel pour compatibilité front.",
+    description="Proxy interne vers app.pastef.org (URL paramétrable via .env PASTEF_VALIDATE_URL). Accepte champ 'carte_pastef' ou 'memberCardNumber'. Retourne le JSON de Pastef tel quel pour compatibilité front.",
 )
-async def verifier_carte_pastef(payload: CartePastefCheckRequest) -> dict[str, Any]:
+async def verifier_carte_pastef(
+    payload: CartePastefCheckRequest,
+) -> dict[str, Any]:
+    settings = get_settings()
     numero = (
         (payload.carte_pastef or "").strip().upper()
         or (payload.memberCardNumber or "").strip().upper()
@@ -55,9 +54,10 @@ async def verifier_carte_pastef(payload: CartePastefCheckRequest) -> dict[str, A
         }
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(PASTEF_HTTP_TIMEOUT)) as client:
+        timeout = httpx.Timeout(settings.pastef_http_timeout_seconds)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                PASTEF_VALIDATE_URL,
+                settings.pastef_validate_url,
                 json={"memberCardNumber": numero},
             )
     except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:

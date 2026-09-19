@@ -152,6 +152,9 @@ class Settings(BaseSettings):
     kopar_api_key: str | None = None
     kopar_private_key: str | None = None
 
+    pastef_validate_url: str = "https://app.pastef.org/api/member/validate"
+    pastef_http_timeout_seconds: float = 10.0
+
     # ================================================================
     # RECONCILIATION KOPAR (fallback anti-régression si webhook KO)
     # ================================================================
