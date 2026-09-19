@@ -3,16 +3,16 @@ from __future__ import annotations
 import csv
 import io
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_roles
+from app.core.auth import Principal, get_principal, require_roles
 from app.core.settings import get_settings
 from app.db.session import get_db
-from app.models.enums import AdhesionStatus
+from app.models.enums import AdhesionStatus, DisabledReason
 from app.repositories.adhesions import AdhesionRepository
 from app.schemas.admin import (
     AdminAdhesionListResponse,
@@ -22,9 +22,24 @@ from app.schemas.admin import (
     AdminUpdateAdhesionResponse,
 )
 from app.schemas.adhesions import AdhesionDetailResponse
+from app.schemas.radiation_admin import (
+    ApplyMassiveRadiationRequest,
+    ApplyMassiveRadiationResponse,
+    RadiationCandidateOut,
+    RadiationCandidatesResponse,
+    RadiationResultItem,
+    RadierManuelRequest,
+    RehabiliterRequest,
+)
 from app.services.adhesion_mail_templates import build_adhesion_status_changed, build_payment_confirmed
 from app.services.adhesions import AdhesionService
 from app.services.mail import send_email_best_effort
+from app.services.radiation_mail_templates import (
+    build_radiation_notification,
+    build_reactivation_notification,
+    resolve_recipient_email,
+)
+from app.services.radiation_service import RadiationService
 
 _ALL_STAFF_ROLES = ("admin", "comite_accueil", "comite_directoire")
 
@@ -413,3 +428,324 @@ async def export_xlsx(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+
+# ===================================================================
+#  RADIATIONS AUTOMATIQUES / MANUELLES
+# ===================================================================
+
+
+@read_router.get(
+    "/radiations/candidats",
+    response_model=RadiationCandidatesResponse,
+    summary="Lister les membres éligibles à la radiation (3+ mois impayés)",
+    description=(
+        "[DEMANDE EXPLICITE USER] Retourne la liste des adhésions validées avec N mois impayés "
+        "consécutifs EN PARTANT du mois présent (pas un streak ancien). "
+        "Exclut automatiquement les rôles privilégiés (Admin, CA, CD, CC, CR, Modérateur). "
+        "Exclut les nouvelles recrues avec moins de N+1 cotisations générées. "
+        "Utilisable en fallback manuel si le CRON / CLI ne fonctionne pas."
+    ),
+)
+async def list_radiation_candidates(
+    delai_mois: int | None = None,
+    include_privileges: bool = False,
+    limit: int | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    settings = get_settings()
+    service = RadiationService(db)
+    candidats = await service.list_candidates(
+        exclude_privileged_roles=not include_privileges,
+        delai_mois=delai_mois,
+        limit=max(0, limit) if limit else None,
+    )
+    out_items: list[RadiationCandidateOut] = []
+    for c in candidats:
+        out_items.append(
+            RadiationCandidateOut(
+                adhesionId=c.adhesion_id,
+                adhesionNom=c.adhesion_nom,
+                adhesionPrenom=c.adhesion_prenom,
+                email=c.email,
+                telMobile=c.tel_mobile,
+                userId=c.user_id,
+                streakMoisImpayes=c.streak_mois_impayes,
+                premierMoisImpaye=c.premier_mois_impaye,
+                dernierMoisImpaye=c.dernier_mois_impaye,
+                moisConcernes=[
+                    {"annee": m.annee, "mois": m.mois, "statut": m.statut}
+                    for m in c.mois_concernes
+                ],
+            )
+        )
+    as_of = datetime.utcnow().isoformat()
+    return {
+        "data": out_items,
+        "meta": {
+            "total": len(out_items),
+            "delaiMois": (
+                delai_mois
+                if delai_mois is not None
+                else settings.radiation_delai_mois_impayes_consecutifs
+            ),
+            "automatiqueEnabled": settings.radiation_automatique_enabled,
+            "excludePrivilegedRoles": not include_privileges,
+            "asOf": as_of,
+        },
+    }
+
+
+@write_router.post(
+    "/radiations/apply-massive",
+    response_model=ApplyMassiveRadiationResponse,
+    summary="Appliquer radiation massive sur les candidats ou une liste d'ids",
+    description=(
+        "Applique la radiation pour (A) tous les candidats détectés auto OU "
+        "(B) les adhesionIds fournis (doivent être candidats ou erreur). "
+        "Radiation atomique (adhesion.statut=radiee + user.is_active=false + timestamps + motif). "
+        "Envoie un email de notification si MAIL_ENABLED=true (best-effort)."
+    ),
+)
+async def apply_massive_radiation(
+    payload: ApplyMassiveRadiationRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    settings = get_settings()
+    service = RadiationService(db)
+    candidats = await service.list_candidates()
+    candidats_by_id: dict[uuid.UUID, object] = {c.adhesion_id: c for c in candidats}
+
+    ids_requetes = list(payload.adhesion_ids) if payload.adhesion_ids else None
+    if ids_requetes:
+        # Vérifier que tous les ids fournis sont BIEN dans la liste candidats (ou refuser silencieusement ? Non: erreur explicite)
+        cibles: list[tuple[uuid.UUID, object | None]] = []
+        for rid in ids_requetes:
+            if rid not in candidats_by_id:
+                # Autoriser l'admin à radier même non candidat (car demande manuelle, ex: pour test) ?
+                # On accepte, et on génère un motif "hors critères auto"
+                cibles.append((rid, None))
+            else:
+                cibles.append((rid, candidats_by_id[rid]))
+    else:
+        cibles = [(cid, candidats_by_id[cid]) for cid in candidats_by_id]
+
+    resultats: list[RadiationResultItem] = []
+    total_ok = 0
+    total_err = 0
+
+    from datetime import datetime as _dt_now
+
+    for adhesion_id, c_obj in cibles:
+        # Générer motif
+        motif_final = payload.motif_override.strip() if payload.motif_override and payload.motif_override.strip() else ""
+        streak = getattr(c_obj, "streak_mois_impayes", None) if c_obj is not None else None
+        if not motif_final:
+            if streak is not None:
+                motif_final = (
+                    f"Radiation automatique — {streak} mois impayés consécutifs."
+                )
+            else:
+                motif_final = (
+                    "Radiation administrative massive (hors critères auto)."
+                )
+
+        try:
+            adhesion, user_after = await service.apply_radiation(
+                adhesion_id=adhesion_id,
+                reason_code=DisabledReason.MANUEL_ADMIN
+                if c_obj is None
+                else DisabledReason.AUTOMATIQUE_3_MOIS,
+                motif=motif_final,
+                radie_par_user_id=principal.user_id,
+            )
+            await db.commit()
+
+            # Relecture pour relations après commit (si besoin email)
+            adhesion_fresh = await AdhesionRepository(db).get_by_id(adhesion.id)
+            email_to = None
+            if adhesion_fresh is not None:
+                # Récupérer user après commit
+                user_fresh = None
+                if getattr(adhesion_fresh, "user_account", None) is not None:
+                    user_fresh = adhesion_fresh.user_account
+                email_to = resolve_recipient_email(
+                    adhesion=adhesion_fresh, user=user_fresh
+                )
+                mois_labels = [
+                    (m.annee, m.mois)
+                    for m in (getattr(c_obj, "mois_concernes", []) if c_obj is not None else [])
+                ]
+                if settings.mail_enabled and email_to:
+                    subj, text, html = build_radiation_notification(
+                        adhesion=adhesion_fresh,
+                        user=user_fresh,
+                        motif=motif_final,
+                        reason_code=DisabledReason.AUTOMATIQUE_3_MOIS if c_obj is not None else DisabledReason.MANUEL_ADMIN,
+                        mois_concernes=mois_labels,
+                        base_url=settings.public_base_url,
+                    )
+                    background_tasks.add_task(
+                        send_email_best_effort,
+                        to=email_to,
+                        subject=subj,
+                        text=text,
+                        html=html,
+                        settings=settings,
+                    )
+
+            resultats.append(
+                RadiationResultItem(
+                    adhesionId=adhesion.id,
+                    adhesionNom=adhesion.nom,
+                    adhesionPrenom=adhesion.prenom,
+                    statut="radié",
+                    erreur=None,
+                )
+            )
+            total_ok += 1
+        except HTTPException as e:
+            # adhesion introuvable / déjà radiée ...
+            nom_err = getattr(c_obj, "adhesion_nom", "") if c_obj is not None else ""
+            pre_err = getattr(c_obj, "adhesion_prenom", "") if c_obj is not None else ""
+            resultats.append(
+                RadiationResultItem(
+                    adhesionId=adhesion_id,
+                    adhesionNom=nom_err,
+                    adhesionPrenom=pre_err,
+                    statut="erreur",
+                    erreur=str(e.detail),
+                )
+            )
+            total_err += 1
+        except Exception as e:  # noqa: BLE001 - on ne veut jamais faire échouer le lot
+            nom_err = getattr(c_obj, "adhesion_nom", "") if c_obj is not None else ""
+            pre_err = getattr(c_obj, "adhesion_prenom", "") if c_obj is not None else ""
+            resultats.append(
+                RadiationResultItem(
+                    adhesionId=adhesion_id,
+                    adhesionNom=nom_err,
+                    adhesionPrenom=pre_err,
+                    statut="erreur",
+                    erreur=str(e),
+                )
+            )
+            total_err += 1
+
+    return {
+        "data": resultats,
+        "meta": {
+            "total": len(resultats),
+            "radiés": total_ok,
+            "erreurs": total_err,
+            "dryRun": False,
+            "radiéParUserId": str(principal.user_id),
+            "effectuéÀ": _dt_now.utcnow().isoformat(),
+        },
+    }
+
+
+@write_router.post(
+    "/adhesions/{adhesion_id}/radier",
+    response_model=AdhesionDetailResponse,
+    summary="Radier manuellement une adhésion + désactiver compte membre",
+    description=(
+        "Action ADMIN manuelle : raison=manuel_admin, radie_par_user_id = admin courant, "
+        "motif OBLIGATOIRE (min 10 caractères). Envoie un email si MAIL_ENABLED=true."
+    ),
+)
+async def radier_manuel_adhesion(
+    adhesion_id: uuid.UUID,
+    payload: RadierManuelRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    settings = get_settings()
+    service = RadiationService(db)
+    motif_clean = payload.motif.strip()
+    adhesion, user_after = await service.apply_radiation(
+        adhesion_id=adhesion_id,
+        reason_code=DisabledReason.MANUEL_ADMIN,
+        motif=motif_clean,
+        radie_par_user_id=principal.user_id,
+    )
+    await db.commit()
+    adhesion_fresh = await AdhesionRepository(db).get_by_id(adhesion.id)
+    if adhesion_fresh is not None and settings.mail_enabled:
+        user_fresh = getattr(adhesion_fresh, "user_account", None)
+        email_to = resolve_recipient_email(adhesion=adhesion_fresh, user=user_fresh)
+        if email_to:
+            subj, text, html = build_radiation_notification(
+                adhesion=adhesion_fresh,
+                user=user_fresh,
+                motif=motif_clean,
+                reason_code=DisabledReason.MANUEL_ADMIN,
+                mois_concernes=[],
+                base_url=settings.public_base_url,
+            )
+            background_tasks.add_task(
+                send_email_best_effort,
+                to=email_to,
+                subject=subj,
+                text=text,
+                html=html,
+                settings=settings,
+            )
+    if adhesion_fresh is None:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable après radiation")
+    return {"data": adhesion_fresh}
+
+
+@write_router.post(
+    "/adhesions/{adhesion_id}/rehabiliter",
+    response_model=AdhesionDetailResponse,
+    summary="Réhabiliter une adhésion radiée + réactiver compte membre",
+    description=(
+        "Action ADMIN 100% MANUELLE. Remet adhesion.statut=validee, user.is_active=true, "
+        "efface les timestamps (conserve motif historique avec préfixe [REHABILITE]). "
+        "N'exige AUCUN paiement rétro : l'administration décide souverainement. "
+        "Envoie un email si MAIL_ENABLED=true."
+    ),
+)
+async def rehabiliter_adhesion(
+    adhesion_id: uuid.UUID,
+    payload: RehabiliterRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    settings = get_settings()
+    service = RadiationService(db)
+    motif_clean = payload.motif.strip()
+    adhesion, user_after = await service.apply_reactivation(
+        adhesion_id=adhesion_id,
+        motif=motif_clean,
+        reactiv_par_user_id=principal.user_id,
+    )
+    await db.commit()
+    adhesion_fresh = await AdhesionRepository(db).get_by_id(adhesion.id)
+    if adhesion_fresh is not None and settings.mail_enabled:
+        user_fresh = getattr(adhesion_fresh, "user_account", None)
+        email_to = resolve_recipient_email(adhesion=adhesion_fresh, user=user_fresh)
+        if email_to:
+            subj, text, html = build_reactivation_notification(
+                adhesion=adhesion_fresh,
+                user=user_fresh,
+                motif_reactivation=motif_clean,
+                base_url=settings.public_base_url,
+            )
+            background_tasks.add_task(
+                send_email_best_effort,
+                to=email_to,
+                subject=subj,
+                text=text,
+                html=html,
+                settings=settings,
+            )
+    if adhesion_fresh is None:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable après réhabilitation")
+    return {"data": adhesion_fresh}
+

@@ -3,12 +3,18 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class DisabledReason(StrEnum):
+    AUTOMATIQUE_3_MOIS = "3_mois_impayes_consecutifs"
+    MANUEL_ADMIN = "manuel_admin"
+
+
 class AdhesionStatus(StrEnum):
     en_attente = "en_attente"
     validee_accueil = "validee_accueil"
     validee = "validee"
     rejetee = "rejetee"
     complement = "complement"
+    radiee = "radiee"
 
 
 class EngagementType(StrEnum):

@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field, field_serializer
 
 from app.core.urls import to_absolute_public_url
+from app.models.enums import DisabledReason
 from app.schemas.geo import CommuneOut, DepartementOut, PaysOut, RegionOut
 
 
@@ -67,6 +68,11 @@ class MeData(BaseModel):
     id: uuid.UUID
     email: EmailStr
     roles: list[str]
+    is_active: bool = Field(default=True, alias="isActive")
+    disabled_at: datetime | None = Field(default=None, alias="disabledAt")
+    disabled_reason_code: DisabledReason | None = Field(default=None, alias="disabledReasonCode")
+    disabled_by_user_id: uuid.UUID | None = Field(default=None, alias="disabledByUserId")
+    disabled_motif: str | None = Field(default=None, alias="disabledMotif")
     last_login_at: datetime | None = Field(default=None, alias="lastLoginAt")
     militant: MilitantProfileLink | None = None
 

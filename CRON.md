@@ -18,7 +18,25 @@ Sans ça, **octobre (mois prochain) n'aura AUCUNE ligne cotisation créée pour 
 
 → Valider / Enregistrer.
 
-C'est **la seule tâche vraiment OBLIGATOIRE** aujourd'hui. Tout le reste = déjà OK.
+### ✅ Étape 1 BIS — **Radiation automatique 3 mois impayés (02h30, APRÈS la génération cotisations)**
+
+**Important : À AJOUTER TOUJOURS APRÈS `generate_monthly_dues` (02h00), car il faut que les lignes du NOUVEAU mois soient créées pour calculer le streak ENTIER.**
+
+→ **Admin Alwaysdata → CRON → + Nouvelle tâche** :
+
+| Champ | Valeur |
+|---|---|
+| **Expression** | `30 2 1 * *` (**1er de chaque mois, 02h30 du matin → 30 min APRÈS la génération cotisations**) |
+| **Commande** | `cd /home/thior/www/moncap-api && /home/thior/www/moncap-api/venv/bin/python -m app.cli.apply_radiations --apply >> /home/thior/logs_apply_radiations.log 2>&1` |
+| **Nom** | `MONCAP — Radiation automatique 3 mois impayés 02h30 (dry-run DEFaut, --apply OBLIGATOIRE ci-dessus)` |
+
+→ Valider / Enregistrer.
+
+**RAAPPEL SÉCURITÉ ÉCRITE DANS LE SCRIPT : le script est DRY-RUN PAR DÉFAUT. Si tu oublies `--apply` → AUCUN changement en base, la tâche liste juste les candidats et retourne exit 0. La commande ci-dessus contient BIEN `--apply` → les radiations sont appliquées.**
+
+**Fallback manuel si CRON ne marche pas :** utiliser `GET /api/v1/admin/radiations/candidats` (endpoint admin → E8 step 8 doc Update.md section [E]) pour voir la liste, puis `POST /api/v1/admin/radiations/apply-massive` pour radier en masse sans attendre le scheduler du mois prochain.
+
+C'est **les 2 seules tâches vraiment OBLIGATOIRES** aujourd'hui. Tout le reste = déjà OK.
 
 ---
 

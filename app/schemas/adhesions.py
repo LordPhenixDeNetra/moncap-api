@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.core.urls import to_absolute_public_url
-from app.models.enums import AdhesionStatus, EngagementType, PaymentMode
+from app.models.enums import AdhesionStatus, DisabledReason, EngagementType, PaymentMode
 from app.schemas.geo import CommuneOut, DepartementOut, PaysOut, RegionOut
 
 
@@ -90,6 +90,10 @@ class AdhesionDetailOut(BaseModel):
     profile_photo_url: str | None = None
     statut: AdhesionStatus
     motif_rejet: str | None = Field(default=None, alias="motifRejet")
+    radie_at: datetime | None = Field(default=None, alias="radieAt")
+    radie_par_user_id: uuid.UUID | None = Field(default=None, alias="radieParUserId")
+    radiation_reason_code: DisabledReason | None = Field(default=None, alias="radiationReasonCode")
+    radiation_motif: str | None = Field(default=None, alias="radiationMotif")
     certification: bool
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")

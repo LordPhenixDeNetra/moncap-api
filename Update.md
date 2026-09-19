@@ -1,12 +1,218 @@
 # UPDATE MONCAP API — Journal des modifications
 
-Date : 19 septembre 2026 (4 modifications)  
+Date : 19 septembre 2026 (5 modifications)  
 Auteur : Session TRAE  
 Objets :
   [A] Mise en oeuvre de la règle « Le membre qui adhère ne paie pas le mois courant »
   [B] Résolution d'un bug 500 masqué sur création d'article (article créé + erreur HTTP 500)
   [C] Emails de notification sur les changements de statut des articles
   [D] Hydratation GEO sur MilitantOut + endpoints GEO individuels GET /{id}
+  [E] RADIATION AUTOMATIQUE 3 mois impayés consécutifs + Endpoint admin fallback manuel + Guards auth is_active
+
+---
+
+## [E] RADIATION AUTOMATIQUE — Désactivation comptes 3 mois sans cotiser + fallback manuel
+
+### 1. But (tableau « Ce qui manque IMPÉRATIVEMENT »)
+Règle métier : **tout militant payant (adhésion = `validee`, NON privilégié) qui reste 3 MOIS CONSÉCUTIFS sans payer de cotisation mensuelle est AUTOMATIQUEMENT RADIÉ + compte utilisateur désactivé (JWT invalidé à la prochaine requête).**
+
+**Seuil configurable** dans `.env` (pas de hardcode) :
+```ini
+RADIATION_AUTOMATIQUE_ENABLED=true        # défaut true ; passer false pour couper totalement en prod
+RADIATION_DELAI_MOIS_IMPAYES_CONSECUTIFS=3 # défaut 3
+```
+
+### 2. Règle "impayé" comptabilisée
+- Une ligne `cotisations_mensuelles` est **impayée** SSI son `statut NOT IN ('payee', 'annulee')`.  
+  → `en_attente` ET `echue` → tous deux comptent comme impayé.
+- Un adhérent est protégé ("nouveau") tant que le NB TOTAL de cotisations générées pour lui est `≤ delai_mois`.  
+  → Il faut MINIMUM `delai_mois + 1` cotisations générées (autrement dit le mois offert ne compte jamais dans le streak).
+- Le streak (mois consécutifs) est calculé **EN PARTANT DU MOIS COURANT (as_of) VERS LE PASSÉ**.  
+  → Un ancien streak datant d'il y a 2 ans (tout payé récemment) NE DÉCLENCHE PAS la radiation.
+
+**Exclusions automatique (radiation manuelle admin TOUJOURS autorisée)** :
+- Rôles privilégiés (source unique → `RadiationService.PRIVILEGED_ROLES_AUTO_EXCLUDE`) :  
+  `admin, comite_accueil, comite_directoire, coordinateur_commissariat, coordinateur_regional, moderateur`.
+- Toute adhésion avec `statut != validee` (déjà en_attente / complement / rejetee / radiee).
+- Toute adhésion dont le compte user est déjà `is_active = false` (déjà désactivée).
+
+### 3. Changements BDD — Alembic (1 revision, backfill safe)
+Fichier : [alembic/versions/z9a8y7x6w5v4_add_radiation_and_disabled_fields.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/alembic/versions/z9a8y7x6w5v4_add_radiation_and_disabled_fields.py)  
+**8 colonnes nouvelles + 2 FK + 8 index.** Backfill `users.is_active = '1'` (tous anciens users → actifs, pas de régression). Downgrade réversible 100%.
+
+#### Table `adhesions` (4 colonnes + 1 FK)
+| Colonne | Type | Commentaire |
+|---|---|---|
+| `radie_at` | TIMESTAMP NULL | Date de radiation (quand statut passe à `radiee`) |
+| `radie_par_user_id` | UUID NULL FK users.id → SET NULL ON DELETE | Admin qui a fait la radiation ; NULL si CRON auto |
+| `radiation_reason_code` | VARCHAR NULL (`disabled_reason` enum VARCHAR) | `3_mois_impayes_consecutifs` OU `manuel_admin` |
+| `radiation_motif` | TEXT NULL | Raison détaillée audit (pour réhabilitation ultérieure) |
+
+#### Table `users` (4 colonnes + 1 FK)
+| Colonne | Type | Commentaire |
+|---|---|---|
+| `is_active` | BOOLEAN NOT NULL DEFAULT '1' | `false` = compte désactivé, plus personne ne peut se connecter |
+| `disabled_at` | TIMESTAMP NULL | Date de désactivation |
+| `disabled_reason_code` | VARCHAR NULL | Même enum que radiation_reason_code |
+| `disabled_motif` | TEXT NULL | Motif détaillé |
+| `disabled_by_user_id` | UUID NULL FK users.id → SET NULL | Admin l'ayant fait (NULL si auto) |
+
+### 4. Enum `DisabledReason` (partagé)
+Fichier : [models/enums.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/models/enums.py)  
+Ajout du `StrEnum` et extension `AdhesionStatus.radiee` :
+```python
+class DisabledReason(str, enum.Enum):
+    AUTOMATIQUE_3_MOIS = "3_mois_impayes_consecutifs"
+    MANUEL_ADMIN       = "manuel_admin"
+```
+→ Stocké en VARCHAR (native_enum=False partout, aucun `ALTER TYPE` PostgreSQL).
+
+### 5. Service central (1 instance appelée par CLI CRON + Endpoints admin HTTP)
+Fichier : [app/services/radiation_service.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/radiation_service.py)
+
+#### Méthode 1 — `list_candidates(as_of, delai_mois, exclude_privileged_roles=True, limit=None)`
+- Returns `list[RadiationCandidate]` (dataclass) : adhesion_id, nom/prenom, email/tel, streak_mois_impayes, mois_concernes (tuple annee, mois), nb_cotis_generees, roles_privileges.
+- Algorithme streak cardinal : `ordinal = annee * 12 + (mois - 1)`. Curseur reculant depuis `as_of_ordinal` tant que le mois existe ET que statut ∉ {payee, annulee}.
+- Protection recrues : `if nb_cotis_generees <= delai_mois → skip`.
+- Exclusion rôles : `NOT EXISTS user_roles WHERE role IN PRIVILEGED_ROLES_AUTO_EXCLUDE`.
+
+#### Méthode 2 — `apply_radiation(adhesion_id, reason_code, motif, radie_par_user_id=None)`
+**ACTION ATOMIQUE SANS COMMIT (appelant commit ensuite)** :
+1. Relecture adhésion + compte user lié (raise 404 si introuvable)
+2. Si déjà statut `radiee` → skip idempotent (pas d'erreur)
+3. Mutations adhesion : `statut = radiee, radie_at = utcnow, radie_par_user_id, radiation_reason_code, radiation_motif`
+4. Mutations user (si existe) : `is_active = false, disabled_at, disabled_reason_code, disabled_motif, disabled_by_user_id`
+5. Retourne `(adhesion, user_after)` → appelant commit puis email.
+
+#### Méthode 3 — `apply_reactivation(adhesion_id, reactivation_motif, fait_par_user_id)`
+**ACTION ATOMIQUE INVERSE (100 % MANUELLE ADMIN)** :
+1. Vérifie adhesion.statut == `radiee` (sinon 400)
+2. Audit historique : ancien motif conservé dans champ avec préfixe `[REHABILITÉ YYYY-MM-DD par {email_admin}] — motif`
+3. Reset adhesion : `statut → validee, radie_at/radie_par_user_id/radiation_reason_code → NULL`
+4. Reset user : `is_active → true, disabled_at/disabled_reason_code/disabled_by_user_id → NULL`
+5. AUCUNE CRÉATION DE COTISATIONS RÉTRO (aucun paiement exigible à la réhabilitation).
+
+### 6. Guards Auth (Triple verrouillage — aucun échappatoire)
+| Guard | Endroit | Comportement |
+|---|---|---|
+| Login | [services/auth.py L62-L71](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/auth.py#L62-L71) | Avant créer tokens → si `not user.is_active` → **HTTP 403 "Compte désactivé"** (aucun JWT créé) |
+| Refresh | [services/auth.py L120-L131](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/auth.py#L120-L131) | Avant rotation → `is_active==false` → **403 + revoke ALL refresh tokens** du user (force logout partout) |
+| `get_principal()` | [core/auth.py L46-L50](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/core/auth.py#L46-L50) | TOUS endpoints protégés → si JWT valide 2h mais `is_active=false` → **403 immédiat** (JWT révoqué par état BDD) |
+| On-the-fly création compte | [services/auth.py L186-L191](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/auth.py#L186-L191) | Si adhésion retrouvée par email avec `statut == radiee` → **refus création / connexion** |
+
+### 7. Nouveaux champs exposés — 100 % RÉTROCOMPATIBLES (AJOUTÉS UNIQUEMENT)
+#### Schéma `AdhesionDetailOut` → réponses admin `GET/PATCH /admin/adhesions/{id}`
+Fichier : [schemas/adhesions.py L91-L96](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/adhesions.py#L91-L96)  
+Ajout 4 champs (alias camelCase) :
+```
+radieAt, radieParUserId, radiationReasonCode, radiationMotif
+```
+
+#### Schéma `MeData` → réponse `GET /auth/me`
+Fichier : [schemas/auth.py L67-L77](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/auth.py#L67-L77)  
+Ajout 6 champs :
+```
+is_active, disabledAt, disabledByUserId, disabledReasonCode, disabledMotif, adhesionRadieAt
+```
+
+### 8. ENDPOINT ADMIN FALLBACK MANUEL (DEMANDE EXPLICITE UTILISATEUR)
+**Raison : si CRON Alwaysdata ne marche pas, on peut déclencher manuellement les actions depuis l'espace admin sans attendre le scheduler.**
+
+Router admin inclus automatiquement via `api_v1_router.include_router(admin.read_router)` + `admin.write_router` → **aucun fichier `router.py` à modifier**, l'enregistrement est déjà effectif.
+
+Fichiers :
+- Schemas : [app/schemas/radiation_admin.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/radiation_admin.py)
+- Routes : [app/api/v1/routes/admin.py L432-L750](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/api/v1/routes/admin.py#L432-L750)
+
+| # | Endpoint | Méthode | RBAC | Rôle |
+|---|---|---|---|---|
+| E1 | `/api/v1/admin/radiations/candidats` | **GET** | admin.read_router | **TOUS ROLES ADMINS** modérateurs + comités |
+| E2 | `/api/v1/admin/radiations/apply-massive` | **POST** | admin.write_router | admin |
+| E3 | `/api/v1/admin/adhesions/{id}/radier` | **POST** | admin.write_router | admin |
+| E4 | `/api/v1/admin/adhesions/{id}/rehabiliter` | **POST** | admin.write_router | admin |
+
+#### E1 — Lister candidats (fallback CRON manuel)
+Query params optionnels : `annee`, `mois`, `as_of` (ISO), `exclude_privileged=true`, `limit`, `delai_mois_override`  
+Réponse : `RadiationCandidatesResponse` → `{ asOf, delaiMois, candidates: [...] }`. Chaque candidat expose `streakMoisImpayes`, `moisConcernes[]`, `motifSuggestion` (texte prêt à coller dans la radiation).
+
+#### E2 — Radiation massive manuelle admin (apply list candidate_ids)
+Body `ApplyMassiveRadiationRequest { adhesionIds: uuid[], motif (min 10 chars) }`  
+- Si un id ne figure DANS les candidats détectés (as_of + delai courants) → 400 liste des ids non trouvés
+- Retour : `{ totalAppliquees, totalErreurs, rapports: [...] }`
+- Emails envoyés en `BackgroundTasks` best-effort après chaque commit.
+
+#### E3 — Radier UN adhérent manuellement (peut être un rôle privilégié)
+Body `RadierManuelRequest { motif (min 10 chars obligatoire), reasonCode = "manuel_admin" (défaut) }`  
+**Cas autorisé** : on peut radier `admin / comite_directoire / ...` à la main. Motif obligatoire (min 10 chars) pour audit.  
+Retour 400 si adhérent déjà statut `radiee`.
+
+#### E4 — Réhabiliter UN adhérent (reset statut + is_active)
+Body `RehabiliterRequest { reactivationMotif (min 10 chars obligatoire) }`  
+- 400 si adhésion PAS statut `radiee`
+- Motifs **anciens conservés** avec préfixe `[REHABILITÉ ...]` dans `radiation_motif` et `disabled_motif` pour audit complet
+- **AUCUN** paiement rétro n'est exigé (décision métier)
+
+### 9. Templates Emails (notification membre)
+Fichier : [app/services/radiation_mail_templates.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/radiation_mail_templates.py)
+
+- `build_radiation_notification(adhesion, user, motif, reason_code, mois_concernes, base_url)` → sujet `[MONCAP] Désactivation de votre espace membre — {X} mois impayés`
+- `build_reactivation_notification(...)` → sujet `[MONCAP] Réhabilitation de votre espace membre`
+- Helper : `resolve_recipient_email(adhesion, user)` → email de préférence user.account.email, fallback adhesion.email_contact
+- Format : Subject + text brut + HTML léger (lien page support).
+- **Pattern jamais bloquant** : appels dans `BackgroundTasks.add_task(send_email_best_effort, ...)` APRES `session.commit()` ; en CLI → direct mais try/except pour ignorer toute erreur SMTP.
+
+### 10. Script CLI CRON (job mensuel)
+Fichier : [app/cli/apply_radiations.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/cli/apply_radiations.py)  
+**Règle d'or : DRY-RUN PAR DÉFAUT. Ajouter `--apply` OBLIGATOIREMENT pour modifier la BDD.**
+
+Usage :
+```bash
+# Juste lister les candidats, 0 écriture :
+poetry run python -m app.cli.apply_radiations
+
+# Appliquer les radiations :
+poetry run python -m app.cli.apply_radiations --apply
+
+# Lancer avec limite progressive en prod :
+poetry run python -m app.cli.apply_radiations --apply --limit 10
+
+# Override RADIATION_AUTOMATIQUE_ENABLED=false :
+poetry run python -m app.cli.apply_radiations --apply --force
+
+# Rattraper un mois où CRON a raté :
+poetry run python -m app.cli.apply_radiations --apply --annee 2026 --mois 5
+# ou :
+poetry run python -m app.cli.apply_radiations --apply --as-of 2026-05-15T00:00:00Z
+
+# Changer temporairement le seuil (ex: passer à 4 mois un mois) :
+poetry run python -m app.cli.apply_radiations --apply --delai-mois 4
+```
+
+Comportement :
+- Idempotent : si déjà `radiee` → skip, pas d'erreur
+- Commit **par adhérent** (un échec = 1 rollback, pas tout le lot)
+- Retour exit code 0 si 0 erreur (même si 0 candidat) ; 1 si ≥ 1 erreur
+- Logs horodatés UTC (UTF-8 safe Windows / cp1252)
+
+### 11. Checklist déploiement
+1. **Alembic** → lancer `alembic upgrade head` **AVANT** de redémarrer l'app (nouvelles colonnes + index).
+2. **CRON Alwaysdata** → ajouter la tâche (cf CRON.md : `0 30 1 * *` → APRES `generate_monthly_dues` 02h00).
+3. **Smoke test** : lancer CLI sans `--apply` → vérifier la liste des candidats en prod (exit 0).
+4. **Optional** : si toggle global off → passer `RADIATION_AUTOMATIQUE_ENABLED=false` dans `.env` (le script ne s'exécute pas tant que pas --force).
+
+### 12. Vérifications
+```bash
+# AST parse syntax check de TOUS les fichiers nouveaux/modifiés → exit 0
+$env:PYTHONDONTWRITEBYTECODE="1"
+poetry run python -c "import ast; [ast.parse(open(f,encoding='utf-8').read(), f) for f in [...]"
+
+# Tests : 4 passed / 6 failed (tous 6 = préexistant NON LIÉ : 
+# `UserRepository.create_user() missing nom / prenom` → 0 NOUVELLE RÉGRESSION)
+poetry run pytest tests/ -v
+
+# CLI smoke (pas besoin de BDD opérationnelle pour --help) :
+poetry run python -m app.cli.apply_radiations --help → exit 0
+```
 
 ---
 

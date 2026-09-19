@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.types import GUID
-from app.models.enums import AdhesionStatus, EngagementType, PaymentMode
+from app.models.enums import AdhesionStatus, DisabledReason, EngagementType, PaymentMode
 
 
 class Adhesion(Base):
@@ -102,6 +102,18 @@ class Adhesion(Base):
     validation_directoire_user = relationship(
         "User", foreign_keys=[validation_directoire_user_id]
     )
+
+    radie_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    radie_par_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    radie_par_user = relationship("User", foreign_keys=[radie_par_user_id])
+    radiation_reason_code: Mapped[DisabledReason | None] = mapped_column(
+        SAEnum(DisabledReason, name="disabled_reason", native_enum=False, validate_strings=True),
+        nullable=True,
+        index=True,
+    )
+    radiation_motif: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     user_account = relationship(
         "User",

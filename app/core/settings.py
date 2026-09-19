@@ -167,6 +167,17 @@ class Settings(BaseSettings):
     # Période de boucle en mode --daemon (en secondes). Défaut = 300s = 5 minutes.
     reconcile_kopar_poll_seconds: int = 300
 
+    # ================================================================
+    # RADIATION AUTOMATIQUE — 3 mois impayes consecutifs
+    # ================================================================
+    # Active / desactive globalement la radiation automatique via CRON / CLI.
+    # Si "false" → le script CLI s'arrete immediatement SAUF si --force passe en argument.
+    radiation_automatique_enabled: bool = True
+    # Nombre de mois IMPAYES CONSECUTIFS necessaires avant de declencher la radiation.
+    # Le CRON ne radie JAMAIS un adherent ayant moins que ce nombre + 1 de cotisations generees
+    # (nouvelles recrues protegees, regle du "mois courant offert" deja appliquee a la creation).
+    radiation_delai_mois_impayes_consecutifs: int = 3
+
     default_adhesion_fcfa: int = 5
     default_cotisation_mensuelle_fcfa: int = 5
 

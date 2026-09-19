@@ -43,6 +43,12 @@ async def get_principal(
     if not user:
         raise HTTPException(status_code=401, detail="Utilisateur introuvable")
 
+    if not getattr(user, "is_active", True):
+        raise HTTPException(
+            status_code=403,
+            detail="Compte désactivé : contactez l'administration",
+        )
+
     if not isinstance(roles, list):
         roles = []
     roles_str = [str(r) for r in roles]

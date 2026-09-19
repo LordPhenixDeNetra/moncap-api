@@ -3,13 +3,13 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.types import GUID
-from app.models.enums import AppRole
+from app.models.enums import AppRole, DisabledReason
 
 
 class User(Base):
@@ -20,9 +20,21 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(500))
     nom: Mapped[str] = mapped_column(String(200))
     prenom: Mapped[str] = mapped_column(String(200))
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default="1", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    disabled_reason_code: Mapped[DisabledReason | None] = mapped_column(
+        SAEnum(DisabledReason, name="disabled_reason", native_enum=False, validate_strings=True),
+        nullable=True,
+        index=True,
+    )
+    disabled_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    disabled_motif: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    disabled_by_user = relationship("User", remote_side=[id], foreign_keys=[disabled_by_user_id])
 
     adhesion_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(),

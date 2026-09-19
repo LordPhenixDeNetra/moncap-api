@@ -15,10 +15,11 @@ from app.core.security import (
     verify_password,
 )
 from app.core.settings import get_settings
-from app.models.enums import AppRole
+from app.models.enums import AdhesionStatus, AppRole
 from app.repositories.adhesions import AdhesionRepository
 from app.repositories.sessions import RefreshSessionRepository
 from app.repositories.users import UserRepository
+from app.models.user import User as _UserModel
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,14 @@ class AuthService:
 
         if not authed or user is None:
             raise HTTPException(status_code=401, detail="Identifiants invalides")
+
+        # Guard compte désactivé / radiation
+        u_typed: _UserModel = user  # type: ignore[assignment]
+        if not getattr(u_typed, "is_active", True):
+            raise HTTPException(
+                status_code=403,
+                detail="Compte désactivé : contactez l'administration",
+            )
 
         roles = await self.users.list_roles(user.id)
         if AppRole.militant.value not in roles:
@@ -107,6 +116,19 @@ class AuthService:
             await self.refresh_sessions.revoke(existing.id)
             await self.session.commit()
             raise HTTPException(status_code=401, detail="Refresh token expiré")
+
+        # Guard compte désactivé avant rotation (front doit logout immédiatement)
+        user_for_refresh = await self.users.get_by_id(existing.user_id)
+        if user_for_refresh is None:
+            raise HTTPException(status_code=401, detail="Utilisateur introuvable")
+        ur: _UserModel = user_for_refresh  # type: ignore[assignment]
+        if not getattr(ur, "is_active", True):
+            await self.refresh_sessions.revoke_all_for_user(existing.user_id)
+            await self.session.commit()
+            raise HTTPException(
+                status_code=403,
+                detail="Compte désactivé : contactez l'administration",
+            )
 
         await self.refresh_sessions.mark_rotated(existing.id)
 
@@ -160,6 +182,12 @@ class AuthService:
 
         adhesion = await self.adhesions.get_validated_by_email(normalized_email)
         if adhesion is None:
+            return None, False
+        # Guard adhesion radiée : même si le mot de passe colle, on refuse de créer/connecter.
+        statut_val = (
+            adhesion.statut.value if isinstance(adhesion.statut, AdhesionStatus) else str(adhesion.statut)
+        )
+        if statut_val == AdhesionStatus.radiee.value:
             return None, False
         candidate = self._initial_password_for(adhesion)
         if not candidate or candidate != provided:
