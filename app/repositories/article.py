@@ -350,11 +350,15 @@ class ArticleCommentRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    def _author_join(self, qy):
-        return qy
+    def _base_loads(self):
+        return (selectinload(ArticleComment.author),)
 
     async def get_by_id(self, comment_id: uuid.UUID) -> ArticleComment | None:
-        qy = select(ArticleComment).where(ArticleComment.id == comment_id)
+        qy = (
+            select(ArticleComment)
+            .where(ArticleComment.id == comment_id)
+            .options(*self._base_loads())
+        )
         res = await self.session.execute(qy)
         return res.scalar_one_or_none()
 
@@ -375,7 +379,12 @@ class ArticleCommentRepository:
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(count_q)).scalar_one()
         offset = (page - 1) * page_size
-        qy = base.order_by(desc(ArticleComment.created_at)).limit(page_size).offset(offset)
+        qy = (
+            base.order_by(desc(ArticleComment.created_at))
+            .limit(page_size)
+            .offset(offset)
+            .options(*self._base_loads())
+        )
         items = list((await self.session.execute(qy)).scalars().all())
         return items, int(total)
 

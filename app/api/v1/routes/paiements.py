@@ -357,21 +357,57 @@ async def etat_cotisation_publique(
     montant_annuel_paye = 0
     mois_payes = 0
     montant_du = 0
+    premiere_cotisation_annee: int | None = None
+    premiere_cotisation_mois: int | None = None
+    est_premier_mois_offert = False
     if adhesion_est_validee:
         cotisations_service = CotisationsService(db)
+        params_svc = ParametresPaiementService(db)
+        date_validation_d: date | None = None
+        v_dir = getattr(adhesion, "validation_directoire_at", None)
+        if v_dir is not None:
+            try:
+                date_validation_d = v_dir.date() if hasattr(v_dir, "date") else date.fromisoformat(str(v_dir)[:10])
+            except Exception:
+                date_validation_d = None
+        if date_validation_d is None:
+            v_acc = getattr(adhesion, "validation_accueil_at", None)
+            if v_acc is not None:
+                try:
+                    date_validation_d = v_acc.date() if hasattr(v_acc, "date") else date.fromisoformat(str(v_acc)[:10])
+                except Exception:
+                    date_validation_d = None
+        if date_validation_d is None:
+            c_at = getattr(adhesion, "created_at", None)
+            if c_at is not None:
+                try:
+                    date_validation_d = c_at.date() if hasattr(c_at, "date") else date.fromisoformat(str(c_at)[:10])
+                except Exception:
+                    date_validation_d = date.today()
+            else:
+                date_validation_d = date.today()
+        premiere_cotisation_annee, premiere_cotisation_mois = await params_svc.determiner_premier_mois_cotisation(date_validation_d)
+        today = date.today()
+        est_premier_mois_offert = (premiere_cotisation_annee, premiere_cotisation_mois) > (today.year, today.month)
         cotisation_courante = await cotisations_service.get_cotisation_courante(adhesion.id)
-        if cotisation_courante is None:
-            today = date.today()
+        if cotisation_courante is None and not est_premier_mois_offert:
+            try:
+                await cotisations_service.generer_pour_adherent_suite_validation(adhesion.id, date_validation_d)
+                await db.commit()
+                cotisation_courante = await cotisations_service.get_cotisation_courante(adhesion.id)
+            except Exception:
+                await db.rollback()
+                cotisation_courante = None
+        if cotisation_courante is None and est_premier_mois_offert:
             try:
                 cotisation_courante = await cotisations_service.creer_cotisation(
-                    adhesion.id, today.year, today.month
+                    adhesion.id, premiere_cotisation_annee, premiere_cotisation_mois
                 )
                 await db.commit()
             except Exception:
                 await db.rollback()
                 cotisation_courante = None
         try:
-            params_svc = ParametresPaiementService(db)
             montant_reference = await params_svc.get_montant(
                 ParametrePaiementCode.cotisation_mensuelle, date.today()
             )
@@ -399,7 +435,9 @@ async def etat_cotisation_publique(
             1 for c in historique if getattr(c, "annee", 0) == annee_courante and _statut_egal_payee(c)
         )
         montant_du = 0
-        if cotisation_courante is not None:
+        if est_premier_mois_offert:
+            montant_du = 0
+        elif cotisation_courante is not None:
             cc_montant = getattr(cotisation_courante, "montant", None) or 0
             if not _statut_egal_payee(cotisation_courante):
                 montant_du = cc_montant or 0
@@ -446,6 +484,9 @@ async def etat_cotisation_publique(
         "moisPayesAnnee": int(mois_payes or 0),
         "cotisationCourante": cotisation_courante_out,
         "historique24Mois": historique_24_mois_out,
+        "premiereCotisationAnnee": premiere_cotisation_annee,
+        "premiereCotisationMois": premiere_cotisation_mois,
+        "estPremierMoisOffert": bool(est_premier_mois_offert),
     }
 
 
@@ -880,47 +921,98 @@ async def ma_cotisation_mois(
     if not adhesion:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
     service = CotisationsService(db)
+    params_svc = ParametresPaiementService(db)
     qr = QRCodeStorageService()
     _, qr_abs = qr.generer_qr_adherent(adhesion.id)
-    cc = await service.get_cotisation_courante(adhesion.id)
-    if cc is None:
-        today = date.today()
-        try:
-            cc = await service.creer_cotisation(adhesion.id, today.year, today.month)
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            cc = None
-    try:
-        params_svc = ParametresPaiementService(db)
-        montant_reference = await params_svc.get_montant(
-            ParametrePaiementCode.cotisation_mensuelle, date.today()
-        )
-        if montant_reference and montant_reference > 0:
-            if cc is not None and (
-                cc.montant is None
-                or cc.montant <= 0
-                or abs(cc.montant - montant_reference) > 1
-            ):
-                cc.montant = montant_reference
-    except Exception:
-        if cc is not None and (cc.montant is None or cc.montant <= 0):
-            cc.montant = 5
-    historique = await service.historique_adherent(adhesion.id, 24)
-    annee = date.today().year
-    def _statut_egal_payee(c: Any) -> bool:
-        s = getattr(c, "statut", None)
-        return s == CotisationStatut.payee or (hasattr(s, "value") and s.value == "payee") or str(s) == "payee"
-    montant_annuel_paye = sum(
-        (getattr(c, "montant", 0) or 0)
-        for c in historique
-        if getattr(c, "annee", 0) == annee and _statut_egal_payee(c)
+    adhesion_est_validee = (
+        getattr(adhesion, "statut", None) == AdhesionStatus.validee
+        or (hasattr(getattr(adhesion, "statut", None), "value") and adhesion.statut.value == "validee")
+        or str(getattr(adhesion, "statut", "")) == "validee"
     )
-    mois_payes = sum(1 for c in historique if getattr(c, "annee", 0) == annee and _statut_egal_payee(c))
-    montant_du = 0
-    if cc is not None and not _statut_egal_payee(cc):
-        montant_du = getattr(cc, "montant", 0) or 0
     paiement_adhesion_confirme = await _calculer_paiement_adhesion_confirme(adhesion, db)
+    cc: Any = None
+    historique: list = []
+    montant_annuel_paye = 0
+    mois_payes = 0
+    montant_du = 0
+    premiere_cotisation_annee: int | None = None
+    premiere_cotisation_mois: int | None = None
+    est_premier_mois_offert = False
+    if adhesion_est_validee:
+        date_validation_d: date | None = None
+        v_dir = getattr(adhesion, "validation_directoire_at", None)
+        if v_dir is not None:
+            try:
+                date_validation_d = v_dir.date() if hasattr(v_dir, "date") else date.fromisoformat(str(v_dir)[:10])
+            except Exception:
+                date_validation_d = None
+        if date_validation_d is None:
+            v_acc = getattr(adhesion, "validation_accueil_at", None)
+            if v_acc is not None:
+                try:
+                    date_validation_d = v_acc.date() if hasattr(v_acc, "date") else date.fromisoformat(str(v_acc)[:10])
+                except Exception:
+                    date_validation_d = None
+        if date_validation_d is None:
+            c_at = getattr(adhesion, "created_at", None)
+            if c_at is not None:
+                try:
+                    date_validation_d = c_at.date() if hasattr(c_at, "date") else date.fromisoformat(str(c_at)[:10])
+                except Exception:
+                    date_validation_d = date.today()
+            else:
+                date_validation_d = date.today()
+        premiere_cotisation_annee, premiere_cotisation_mois = await params_svc.determiner_premier_mois_cotisation(date_validation_d)
+        today = date.today()
+        est_premier_mois_offert = (premiere_cotisation_annee, premiere_cotisation_mois) > (today.year, today.month)
+        cc = await service.get_cotisation_courante(adhesion.id)
+        if cc is None and not est_premier_mois_offert:
+            try:
+                await service.generer_pour_adherent_suite_validation(adhesion.id, date_validation_d)
+                await db.commit()
+                cc = await service.get_cotisation_courante(adhesion.id)
+            except Exception:
+                await db.rollback()
+                cc = None
+        if cc is None and est_premier_mois_offert:
+            try:
+                cc = await service.creer_cotisation(
+                    adhesion.id, premiere_cotisation_annee, premiere_cotisation_mois
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                cc = None
+        try:
+            montant_reference = await params_svc.get_montant(
+                ParametrePaiementCode.cotisation_mensuelle, date.today()
+            )
+            if montant_reference and montant_reference > 0:
+                if cc is not None and (
+                    getattr(cc, "montant", None) is None
+                    or getattr(cc, "montant", 0) <= 0
+                    or abs((getattr(cc, "montant", 0) or 0) - montant_reference) > 1
+                ):
+                    cc.montant = montant_reference
+        except Exception:
+            if cc is not None and (getattr(cc, "montant", None) is None or getattr(cc, "montant", 0) <= 0):
+                cc.montant = 5
+        historique = await service.historique_adherent(adhesion.id, 24) or []
+        annee = date.today().year
+        def _statut_egal_payee(c: Any) -> bool:
+            s = getattr(c, "statut", None)
+            return s == CotisationStatut.payee or (hasattr(s, "value") and s.value == "payee") or str(s) == "payee"
+        montant_annuel_paye = sum(
+            (getattr(c, "montant", 0) or 0)
+            for c in historique
+            if getattr(c, "annee", 0) == annee and _statut_egal_payee(c)
+        )
+        mois_payes = sum(1 for c in historique if getattr(c, "annee", 0) == annee and _statut_egal_payee(c))
+        montant_du = 0
+        if est_premier_mois_offert:
+            montant_du = 0
+        elif cc is not None and not _statut_egal_payee(cc):
+            montant_du = getattr(cc, "montant", 0) or 0
     def _valeur_statut(s: Any) -> Any:
         return s.value if hasattr(s, "value") else s
     cc_out = None
@@ -949,11 +1041,6 @@ async def ma_cotisation_mois(
         }
         for c in historique or []
     ]
-    adhesion_est_validee = (
-        getattr(adhesion, "statut", None) == AdhesionStatus.validee
-        or (hasattr(getattr(adhesion, "statut", None), "value") and adhesion.statut.value == "validee")
-        or str(getattr(adhesion, "statut", "")) == "validee"
-    )
     return {
         "adhesionId": adhesion.id,
         "adhesionEstValidee": bool(adhesion_est_validee),
@@ -969,6 +1056,9 @@ async def ma_cotisation_mois(
         "moisPayesAnnee": int(mois_payes or 0),
         "paiementAdhesionConfirme": bool(paiement_adhesion_confirme),
         "historique24Mois": historique_out,
+        "premiereCotisationAnnee": premiere_cotisation_annee,
+        "premiereCotisationMois": premiere_cotisation_mois,
+        "estPremierMoisOffert": bool(est_premier_mois_offert),
     }
 
 

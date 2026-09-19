@@ -105,3 +105,4 @@ class ArticleComment(Base):
     )
 
     article: Mapped[Article] = relationship(back_populates="comments")
+    author: Mapped["User"] = relationship("User", foreign_keys=[author_id])  # type: ignore[assignment]

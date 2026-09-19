@@ -35,22 +35,21 @@ GET /api/v1/paiements/cotisation/etat?adh=<UUID_ADHESION>
     "prenom": "Moustapha",
     "nom": "Diagne",
     "email": "moustapha.d@example.com",
-    "telephone": "+221770000000",               ✅ NOUVEAU (pré-remplissage front)
-    "commissariat": "Commissariat 12",          ✅ NOUVEAU
-    "paiementAdhesionConfirme": true,           ✅ NOUVEAU CRITIQUE (ci-dessous)
+    "telephone": "+221770000000",
+    "commissariat": "Commissariat 12",
+    "paiementAdhesionConfirme": true,
     "cotisationCourante": {
-      "id": "3f1c...ID_COTISATION...",          ← UTILISE POUR ÉTAPE 2.2 SI BESOIN
+      "id": "3f1c...ID_COTISATION...",
       "annee": 2026,
       "mois": 9,
-      "moisLibelle": "Septembre",
-      "dateEcheance": "2026-09-30",
       "montant": 5,
       "statut": "en_attente"
     },
     "montantDu": 5,
-    "aUneCotisationImpayee": true,
-    "estPremierMoisApresValidation": false,
-    "historique": [ /* 12 derniers mois */ ]
+    "premiereCotisationAnnee": 2026,
+    "premiereCotisationMois": 9,
+    "estPremierMoisOffert": false,
+    "historique24Mois": [ /* 24 derniers mois */ ]
   },
   "count": 1
 }
@@ -60,6 +59,15 @@ GET /api/v1/paiements/cotisation/etat?adh=<UUID_ADHESION>
 Si `data.paiementAdhesionConfirme === false` → **L'ADHÉRENT N'A PAS ENCORE PAYÉ SES FRAIS D'ADHÉSION INITIALE**.  
 → REDIRIGE-LE D'ABORD VERS LE PAIEMENT DE **L'ADHÉSION INITIALE** → `POST /paiements/adhesion/{adhesion_id}/initier-public` (endpoint public, email check)  
 → **NE PROPOSE PAS LA COTISATION AVANT QUE CE BOLEAN SOIT À `true`** (backend renverra d'ailleurs un 409 si tu appelles les initier-cotisation avec `paiementAdhesionConfirme=false`).
+
+⚠️ **RÈGLE LOGIQUE FRONTEND #2 — MOIS DE L'ADHÉSION OFFERT :**  
+Si `data.estPremierMoisOffert === true` → **LE MOIS DE L'ADHÉSION EST OFFERT (gratuit) pour ce nouvel adhérent**.
+→ `data.montantDu === 0` (garanti par le backend)
+→ Affiche un bandeau texte explicite, par exemple :
+> **[BON PLAN] Votre premier mois de cotisation est offert. Prochaine échéance : Mois Année (exemple : Octobre 2026).**
+→ Le mois facturé réellement est indiqué par `(data.premiereCotisationMois, data.premiereCotisationAnnee)`.
+→ Tu peux quand même afficher `cotisationCourante` (s'il existe) mais il représente le PREMIER MOIS FACTURÉ (mois suivant l'adhésion), pas le mois en cours.
+→ **Désactive / masque le bouton « Payer ce mois-ci »** si `montantDu === 0` (puisque rien n'est dû).
 
 ---
 
@@ -203,7 +211,7 @@ GET /api/v1/paiements/parametres-public
   "data": [
     { "code": "adhesion_initiale", "montantFcfa": 5, "libelle": "Frais adhésion initiale" },
     { "code": "cotisation_mensuelle", "montantFcfa": 5, "libelle": "Cotisation mensuelle" },
-    { "code": "regle_date_premiere_cotisation", "valeurTexte": "jour_15", "libelle": "Règle date première cotisation" }
+    { "code": "regle_date_premiere_cotisation", "valeurTexte": "mois_suivant", "libelle": "Règle date première cotisation" }
   ],
   "count": 3
 }

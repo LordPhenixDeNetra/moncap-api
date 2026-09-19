@@ -228,9 +228,14 @@ class ArticleService:
         if attachment_rows:
             await self.articles.add_attachments(article.id, attachment_rows)
 
+        await self.articles.set_counters(article_id=article.id)
+
         await self.session.commit()
-        await self.session.refresh(article)
-        return article
+
+        refreshed = await self.articles.get_by_id(article.id, include_deleted=True)
+        if not refreshed:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Article introuvable"})
+        return refreshed
 
     async def get_public_detail(self, article_id: uuid.UUID) -> Article:
         article = await self.articles.get_by_id(article_id, include_deleted=False)
@@ -511,8 +516,10 @@ class ArticleService:
         c = await self.comments.create(c)
         await self.articles.set_counters(article_id=article_id)
         await self.session.commit()
-        await self.session.refresh(c)
-        return c
+        refreshed = await self.comments.get_by_id(c.id)
+        if not refreshed:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Commentaire introuvable"})
+        return refreshed
 
     async def update_comment(
         self,

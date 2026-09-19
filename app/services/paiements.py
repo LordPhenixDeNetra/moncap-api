@@ -70,7 +70,7 @@ class ParametresPaiementService:
         )
         if p and p.valeur_texte:
             return p.valeur_texte
-        return "jour_15"
+        return "mois_suivant"
 
     async def get_all(self) -> list[ParametrePaiement]:
         return await self.repo.list_all()
@@ -132,9 +132,9 @@ class ParametresPaiementService:
             ),
             (
                 ParametrePaiementCode.regle_date_premiere_cotisation.value,
-                "Règle première cotisation (jour_15 = validé avant le 15 → mois courant ; sinon mois suivant)",
+                "Règle première cotisation (mois_suivant = l'adhésion du mois courant ne paie pas le mois en cours, première cotisation le mois suivant)",
                 None,
-                "jour_15",
+                "mois_suivant",
             ),
         ]
         for code, libelle, montant, val_txt in codes_a_seeder:

@@ -192,6 +192,9 @@ class AdherentEtatCotisationFlatOut(BaseModel):
     historique_24_mois: list[CotisationHistoriqueLightOut] = Field(
         default_factory=list, alias="historique24Mois"
     )
+    premiere_cotisation_annee: int | None = Field(default=None, alias="premiereCotisationAnnee")
+    premiere_cotisation_mois: int | None = Field(default=None, alias="premiereCotisationMois")
+    est_premier_mois_offert: bool = Field(default=False, alias="estPremierMoisOffert")
 
 
 class AdherentEtatCotisationData(AdherentEtatCotisationFlatOut):

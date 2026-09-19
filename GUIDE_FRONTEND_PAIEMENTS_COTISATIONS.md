@@ -289,7 +289,7 @@ Rôles autorisés selon endpoint :
 }
 ```
 
-> 💡 **Règle de première cotisation** : modifiable facilement avec code=`regle_date_premiere_cotisation` + valeur_texte=`"jour_15"` (adhésion validée ≤ 15 → cotisation mois courant ; >15 → mois suivant) OU `"mois_suivant"` (toujours mois suivant).
+> 💡 **Règle de première cotisation** : modifiable facilement avec code=`regle_date_premiere_cotisation` + valeur_texte=`"mois_suivant"` (valeur par défaut : l'adhérent ne paie pas le mois de son adhésion, première cotisation le mois suivant) OU `"jour_XX"` (adhésion validée ≤ XX → cotisation mois courant ; >XX → mois suivant).
 
 #### 2.9 GET `/admin/cotisations/dashboard?annee=2026&mois=3`
 **Dashboard principal** de l'espace admin cotisations.
@@ -472,7 +472,7 @@ Astuce dev : teste avec `--dry-run true` pour compter sans envoyer.
 2. **Lancer migration** : `alembic upgrade head` → crée 3 tables (vérifie dans `pgcli` / `psql`)
 3. **Démarrer API** : `uvicorn app.main:app --reload` → dans les logs du premier démarrage tu dois voir :
    ```
-   [seed] parametres_paiement table vide → insertion 3 paramètres (adhesion=5, mensuelle=5, regle=jour_15)
+   [seed] parametres_paiement table vide → insertion 3 paramètres (adhesion=5, mensuelle=5, regle=mois_suivant)
    ```
 4. **Créer une adhésion** via `/adhesions` (formulaire public).
 5. **Valider l'adhésion** via les 2 validations (comité accueil + CD).
