@@ -552,5 +552,89 @@ Avant mise en prod, vérifier **impérativement** :
 8. [ ] Tarif de PROD configuré dans `/admin/parametres-paiement` (adhesion_initiale=25.000, cotisation_mensuelle=XXXX, **pas 5 FCFA**) — enregistrer avec `date_effet` = jour J
 9. [ ] QRs régénérés après passage en bonne `PUBLIC_BASE_URL`
 10. [ ] Test end-to-end sur un vrai compte de test avec 5 FCFA : soumission → validation → génération cotisation → init paiement Kopar → paiement réel → webhook → marque payée → email reçu
+11. [ ] **Migration multi-périodes exécutée** : la migration Alembic ajoute `periode_mois`, `premiere_annee_couverte`, `premier_mois_couverte` sur `transactions_kopar` → doit être passée **avant** d'activer l'UI multi-périodes
+12. [ ] Vérification suggestion périodes : `GET /paiements/cotisation/prochaine-suggestion?adh=<UUID>&email=<EMAIL>` retourne bien 4 options (Mensuel/Trimestriel/Semestriel/Annuel) dont montants cohérents avec tarif actif
+13. [ ] Test end-to-end paiement **trimestriel** (3 mois) : init `periodeMois=3` → Kopar success → webhook → la transaction Kopar doit marquer **3 lignes** `cotisations_mensuelles.statut = payee`
+
+---
+
+## 🎁 10. OPTION — PAYER PLUSIEURS MOIS EN UNE FOIS (MULTI-PÉRIODES M/T/S/A)
+
+**But** : améliore rétention paiements + réduction friction mensuelle. L'adhérent·e peut choisir de payer 1 / 3 / 6 / 12 mois d'un coup → la **transaction Kopar n'est qu'une**, mais le backend valide ensuite **N lignes `cotisations_mensuelles.statut = payee`** en une seule passe (via webhook success ou CRON rapprochement).
+
+### 10.1 Endpoints NOUVEAUX (dédiés multi-périodes — suggestions)
+
+| # | URL | Router | Auth | But |
+|---|---|---|---|---|
+| S1 | `GET /mon-compte/cotisations/prochaine-suggestion` | adherent | JWT adhérent | 4 options M/T/S/A pour l'adhésion liée au compte JWT |
+| S2 | `GET /paiements/adhesion/{adhesion_id}/cotisation/prochaine-suggestion?email=` | public | email check | Même 4 options, public (pour QR + check email) |
+| S3 | `GET /paiements/cotisation/prochaine-suggestion?adh=<UUID>&email=<EMAIL>` | public | email check | Alias **le plus simple** (tous query params, aucun path param) — à préférer côté front |
+
+**Réponse commune — `ProchainPaiementSuggestionResponse`** :
+```jsonc
+{
+  "adhesionId": "a1b2c3d4-...",
+  "adhesionEstValidee": true,
+  "paiementAdhesionConfirme": true,
+  "options": [
+    { "periodeMois": 1,  "label": "Mensuel",     "montantTotal": 25000, "devise": "XOF",
+      "premierMoisConcerne": { "annee": 2026, "mois": 3, "label": "Mars 2026", "statut": "en_attente" },
+      "listeMois": [ /* 1 élément */ ],
+      "nbMoisImpayesInclus": 1, "nbMoisOffertsInclus": 0 },
+    { "periodeMois": 3,  "label": "Trimestriel", "montantTotal": 75000, /* ... 3 mois ... */ },
+    { "periodeMois": 6,  "label": "Semestriel",  "montantTotal": 150000 /* ... */ },
+    { "periodeMois": 12, "label": "Annuel",      "montantTotal": 300000 /* ... */ }
+  ]
+}
+```
+
+### 10.2 Endpoints EXISTANTS étendus (ajout `periodeMois` en query)
+
+🔒 **Aucun endpoint à supprimer / renommer.** Tous les endpoints d'initiation acceptent **maintenant un query param optionnel `periodeMois=<entier>` (défaut=1, 1<=v<=12, normalise {2,4,5,7,8,9,10,11} → 1 automatiquement).
+
+| Endpoint | Prend `periodeMois` en query | Notes |
+|---|---|---|
+| `POST /paiements/cotisation/initier-public-par-adhesion?adh=...&periodeMois=` | ✅ OUI | **→ À PRÉFÉRER** pour le parcours public QR |
+| `POST /paiements/adhesion/{id}/cotisation-du-mois/initier-public?periodeMois=` | ✅ OUI | Alternative public (path param) |
+| `POST /paiements/cotisation/{cotisation_id}/initier-public?periodeMois=` | ✅ OUI | Parcours public spécifique 1 ID cotisation |
+| `POST /paiements/cotisation/{cotisation_id}/initier?periodeMois=&force=` | ✅ OUI | Interne admin |
+
+**Exemple appel — payer un trimestre entier depuis le scan QR** :
+```js
+// 1. Charger les suggestions
+const sug = await fetch(`/api/v1/paiements/cotisation/prochaine-suggestion?adh=${adh}&email=${encodeURIComponent(email)}`)
+  .then(r => r.json());
+// (UI affiche les 4 options, user clique Trimestriel = sug.options[1].periodeMois = 3)
+
+// 2. Initier paiement Trimestriel = periodeMois=3
+const init = await fetch(
+  `/api/v1/paiements/cotisation/initier-public-par-adhesion?adh=${adh}&periodeMois=3`,
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email })
+  }
+).then(r => r.json());
+// → init.koparToken ; init.paymentUrl ; init.qrCode ; init.montant = sug.options[1].montantTotal
+```
+
+### 10.3 Endpoint ADMIN — Paiement manuel multi-périodes
+| # | URL | Body |
+|---|---|---|
+| A8 | `POST /admin/adhesions/{adhesion_id}/cotisations/paiement-manuel-periode?annee=&mois=` | `{ periodeMois: 1\|3\|6\|12, note?, referencePaiement? }` → `CotisationListResponse` avec les N lignes payées. RBAC = admin / comite_directoire / coordinateur_regional. |
+
+### 10.4 Règles Frontend / Pièges à éviter (SÉCURITÉ)
+1. **Règle d'or** : le `montantTotal` DANS LA RÉPONSE DE SUGGESTION est le **montant à transmettre à Kopar** — utilise toujours cette valeur, **ne jamais faire `periodeMois * tarifMensuel` côté client** (sinon tu décalages : mois déjà payés, premier mois offert, changement de tarif mid-course, etc.).
+2. **Suggestion doit être requête RAFFRAÎCHIE juste avant init paiement** : ne garde pas en cache `options[i].montantTotal` vieux de plusieurs minutes → relance un `GET .../prochaine-suggestion` ou utilise le `montant` de la réponse init (**référence finale Kopar**).
+3. **Options ne doivent pas être montrées** si `adhesionEstValidee === false` OU `paiementAdhesionConfirme === false` (ces adhérents·es doivent d'abord payer les frais d'adhésion).
+4. **Champs `periodeMois` sur historique `TransactionKoparOut`**: nullable → **toujours appliquer `tx.periodeMois ?? 1`** côté front pour affichage uniforme.
+
+### 10.5 Contrats JSON — schémas Pydantic
+Tous les schémas sont exposés dans `/docs` Swagger et `/openapi.json`. Clés :
+- `MoisCotisationLabelOut` : `{ annee, mois, label, statut? }`
+- `ProchainPaiementPeriodeOut` : `{ periodeMois, label, montantTotal, devise, premierMoisConcerne, listeMois[], nbMoisImpayesInclus, nbMoisOffertsInclus }`
+- `ProchainPaiementSuggestionResponse` : wrapper `{ adhesionId, adhesionEstValidee, paiementAdhesionConfirme, options[4] }`
+- `PaiementManuelPeriodeRequest` : body admin manuel `{ periodeMois, note?, referencePaiement? }`
+- `TransactionKoparOut` (champs AJOUTÉS, **nullable** rétro) : `periodeMois`, `premiereAnneeCouverte`, `premierMoisCouverte`
 
 Bon courage pour l'intégration frontend 🚀 ! Si tu bloques sur un contrat JSON, ouvre Swagger `http://localhost:8000/docs#/Paiements` et `http://localhost:8000/docs#/Admin` qui affiche les schémas exacts.

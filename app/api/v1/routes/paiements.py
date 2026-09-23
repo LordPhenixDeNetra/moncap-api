@@ -21,6 +21,7 @@ from app.models.paiements import (
     ParametrePaiementCode,
     StatutTransactionKopar,
     TypeTransactionKopar,
+    PeriodePaiement,
 )
 from app.models.user import User
 from app.repositories.users import UserRepository
@@ -36,11 +37,15 @@ from app.schemas.paiements import (
     CotisationStatut as PydanticCotisationStatut,
     InitPaiementAdhesionPublicRequest,
     InitPaiementResponse,
+    MoisCotisationLabelOut,
     ParametrePaiementCreate,
     ParametrePaiementOut,
     ParametrePaiementUpdate,
     ParametresPaiementListResponse,
+    PaiementManuelPeriodeRequest,
     PaiementManuelRequest,
+    ProchainPaiementPeriodeOut,
+    ProchainPaiementSuggestionResponse,
     TransactionKoparListResponse,
     TransactionKoparOut,
     AdherentEtatCotisationOut,
@@ -494,12 +499,13 @@ async def etat_cotisation_publique(
     "/cotisation/{cotisation_id}/initier-public",
     response_model=InitPaiementResponse,
     summary="(Public) Initier paiement Kopar d'une cotisation mensuelle (scan QR sans JWT)",
-    description="Dédié au parcours scan QR Code permanent. Sans JWT, vérification par email. L'adhérent·e fournit l'email lié à son adhésion pour confirmer son identité.",
+    description="Dédié au parcours scan QR Code permanent. Sans JWT, vérification par email. L'adhérent·e fournit l'email lié à son adhésion pour confirmer son identité. Paramètre `periodeMois` pour payer 1/3/6/12 mois d'un coup (commence à la cotisation fournie).",
 )
 async def initier_paiement_cotisation_public(
     cotisation_id: uuid.UUID,
     body: InitPaiementAdhesionPublicRequest = Body(...),
     service: str | None = Query(None, description="Service de paiement (wave_checkout, orange_money_sn, kopar_services_cross...)"),
+    periode_mois: int = Query(1, ge=1, le=12, alias="periodeMois", description="Nombre de mois consécutifs à payer (1/3/6/12)"),
     db: AsyncSession = Depends(get_db),
 ):
     cot_repo = CotisationMensuelleRepository(db)
@@ -532,9 +538,19 @@ async def initier_paiement_cotisation_public(
             c.montant = 5
     orchestrator = PaiementOrchestratorService(db)
     try:
-        initie = await orchestrator.initier_paiement_cotisation(
-            cotisation_id, service=service, force=False
-        )
+        periode = PeriodePaiement.normaliser(periode_mois)
+        if periode == 1:
+            initie = await orchestrator.initier_paiement_cotisation(
+                cotisation_id, service=service, force=False
+            )
+        else:
+            initie = await orchestrator.initier_paiement_cotisation_periode(
+                adhesion_id=adhesion.id,
+                premiere_annee=int(c.annee),
+                premier_mois=int(c.mois),
+                periode_mois=periode,
+                service=service,
+            )
     except KoparError as e:
         detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
         if e.kopar_error_code:
@@ -572,12 +588,13 @@ async def initier_paiement_cotisation_public(
     "/adhesion/{adhesion_id}/cotisation-du-mois/initier-public",
     response_model=InitPaiementResponse,
     summary="(Public) Payer la cotisation DU MOIS SANS QR Code — juste via UUID adhésion + email",
-    description="Alternative au scan QR : adhérent·e fournit son UUID adhésion (lien reçu par email ou tapé) + son email. Backend récupère (ou crée) la cotisation du mois en cours et initie le paiement Kopar. Sans JWT, vérification par email.",
+    description="Alternative au scan QR : adhérent·e fournit son UUID adhésion (lien reçu par email ou tapé) + son email. Backend récupère (ou crée) la cotisation du mois en cours et initie le paiement Kopar. Sans JWT, vérification par email. Paramètre `periodeMois` pour payer 1/3/6/12 mois.",
 )
 async def initier_paiement_cotisation_du_mois_public_par_adhesion(
     adhesion_id: uuid.UUID,
     body: InitPaiementAdhesionPublicRequest = Body(...),
     service: str | None = Query(None, description="Service de paiement (wave_checkout, orange_money_sn, kopar_services_cross...)"),
+    periode_mois: int = Query(1, ge=1, le=12, alias="periodeMois", description="Nombre de mois consécutifs à payer (1/3/6/12)"),
     db: AsyncSession = Depends(get_db),
 ):
     adhesion_repo = AdhesionRepository(db)
@@ -619,9 +636,19 @@ async def initier_paiement_cotisation_du_mois_public_par_adhesion(
             cc.montant = 5
     orchestrator = PaiementOrchestratorService(db)
     try:
-        initie = await orchestrator.initier_paiement_cotisation(
-            cc.id, service=service, force=False
-        )
+        periode = PeriodePaiement.normaliser(periode_mois)
+        if periode == 1:
+            initie = await orchestrator.initier_paiement_cotisation(
+                cc.id, service=service, force=False
+            )
+        else:
+            initie = await orchestrator.initier_paiement_cotisation_periode(
+                adhesion_id=adhesion.id,
+                premiere_annee=int(cc.annee),
+                premier_mois=int(cc.mois),
+                periode_mois=periode,
+                service=service,
+            )
     except KoparError as e:
         detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
         if e.details is not None:
@@ -642,16 +669,17 @@ async def initier_paiement_cotisation_du_mois_public_par_adhesion(
     "/cotisation/initier-public-par-adhesion",
     response_model=InitPaiementResponse,
     summary="(Public — alias court) Payer la cotisation du mois sans QR : ?adh=<UUID> + email",
-    description="Alias plus court du endpoint /adhesion/{adhesion_id}/cotisation-du-mois/initier-public. Utile pour les navigateurs quand l'adhérent·e tape l'URL à la main ou clique un lien simple dans son email.",
+    description="Alias plus court du endpoint /adhesion/{adhesion_id}/cotisation-du-mois/initier-public. Utile pour les navigateurs quand l'adhérent·e tape l'URL à la main ou clique un lien simple dans son email. Supporte `periodeMois`.",
 )
 async def initier_paiement_cotisation_public_par_adhesion_query(
     adh: uuid.UUID = Query(..., alias="adh", description="UUID de l'adhésion (même paramètre que /cotisation/etat)"),
     body: InitPaiementAdhesionPublicRequest = Body(...),
     service: str | None = Query(None),
+    periode_mois: int = Query(1, ge=1, le=12, alias="periodeMois", description="Nombre de mois consécutifs à payer (1/3/6/12)"),
     db: AsyncSession = Depends(get_db),
 ):
     return await initier_paiement_cotisation_du_mois_public_par_adhesion(
-        adhesion_id=adh, body=body, service=service, db=db
+        adhesion_id=adh, body=body, service=service, periode_mois=periode_mois, db=db
     )
 
 
@@ -679,6 +707,40 @@ async def parametres_paiement_publics(
         ParametrePaiementOut.model_validate(p) for p in items
     ]
     return {"data": data, "count": len(data)}
+
+
+@public_router.get(
+    "/adhesion/{adhesion_id}/cotisation/prochaine-suggestion",
+    response_model=ProchainPaiementSuggestionResponse,
+    summary="(Public) Suggestions de paiement multi-périodes pour une adhésion (par email)",
+)
+async def suggestion_cotisation_public_par_adhesion_id(
+    adhesion_id: uuid.UUID,
+    email: str = Query(..., description="Email de l'adhérent·e (vérification)", alias="email"),
+    db: AsyncSession = Depends(get_db),
+):
+    adhesion_repo = AdhesionRepository(db)
+    adhesion = await adhesion_repo.get_by_id(adhesion_id)
+    if not adhesion:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
+    email_saisi = (email or "").strip().lower()
+    email_stocke = (adhesion.email or "").strip().lower()
+    if not email_saisi or email_stocke != email_saisi:
+        raise HTTPException(status_code=403, detail="L'email fourni ne correspond pas à cette adhésion")
+    return await _build_suggestion_periode(adhesion, db)
+
+
+@public_router.get(
+    "/cotisation/prochaine-suggestion",
+    response_model=ProchainPaiementSuggestionResponse,
+    summary="(Public — alias court) Suggestions de paiement multi-périodes : ?adh=<UUID>&email=<email>",
+)
+async def suggestion_cotisation_public_query(
+    adh: uuid.UUID = Query(..., alias="adh", description="UUID de l'adhésion"),
+    email: str = Query(..., alias="email", description="Email de l'adhérent·e (vérification)"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await suggestion_cotisation_public_par_adhesion_id(adhesion_id=adh, email=email, db=db)
 
 
 @public_router.post(
@@ -825,29 +887,39 @@ async def initier_paiement_cotisation(
     cotisation_id: uuid.UUID,
     service: str | None = Query(None, description="Service de paiement Kopar"),
     force: bool = Query(False),
+    periode_mois: int = Query(1, ge=1, le=12, alias="periodeMois", description="Nombre de mois consécutifs à payer (1/3/6/12)"),
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_db),
 ):
+    cot_repo = CotisationMensuelleRepository(db)
+    c = await cot_repo.get_by_id(cotisation_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Cotisation introuvable")
     try:
-        from app.repositories.paiements import CotisationMensuelleRepository
-
-        cot_repo = CotisationMensuelleRepository(db)
-        c = await cot_repo.get_by_id(cotisation_id)
-        if c is not None:
-            params_svc = ParametresPaiementService(db)
-            montant_reference = await params_svc.get_montant(
-                ParametrePaiementCode.cotisation_mensuelle, date.today()
-            )
-            if montant_reference and montant_reference > 0:
-                if c.montant is None or abs(c.montant - montant_reference) > 1:
-                    c.montant = montant_reference
+        params_svc = ParametresPaiementService(db)
+        montant_reference = await params_svc.get_montant(
+            ParametrePaiementCode.cotisation_mensuelle, date.today()
+        )
+        if montant_reference and montant_reference > 0:
+            if c.montant is None or abs(c.montant - montant_reference) > 1:
+                c.montant = montant_reference
     except Exception:
         pass
     orchestrator = PaiementOrchestratorService(db)
     try:
-        initie = await orchestrator.initier_paiement_cotisation(
-            cotisation_id, service=service, force=force
-        )
+        periode = PeriodePaiement.normaliser(periode_mois)
+        if periode == 1:
+            initie = await orchestrator.initier_paiement_cotisation(
+                cotisation_id, service=service, force=force
+            )
+        else:
+            initie = await orchestrator.initier_paiement_cotisation_periode(
+                adhesion_id=c.adhesion_id,
+                premiere_annee=int(c.annee),
+                premier_mois=int(c.mois),
+                periode_mois=periode,
+                service=service,
+            )
     except KoparError as e:
         detail: dict = {"code": "KOPAR_ERROR", "message": e.message}
         if e.details is not None:
@@ -1062,6 +1134,132 @@ async def ma_cotisation_mois(
     }
 
 
+async def _build_suggestion_periode(
+    adhesion,
+    db: AsyncSession,
+) -> ProchainPaiementSuggestionResponse:
+    """Construit le jeu de 4 options de paiement (M/T/S/A)."""
+    from app.repositories.paiements import CotisationMensuelleRepository
+    noms_mois = [
+        "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+    ]
+    adhesion_est_validee = (
+        getattr(adhesion, "statut", None) == AdhesionStatus.validee
+        or (hasattr(getattr(adhesion, "statut", None), "value") and adhesion.statut.value == "validee")
+        or str(getattr(adhesion, "statut", "")) == "validee"
+    )
+    paiement_adhesion_confirme = await _calculer_paiement_adhesion_confirme(adhesion, db)
+    cotisations_service = CotisationsService(db)
+    cot_repo = CotisationMensuelleRepository(db)
+    cc = await cotisations_service.get_cotisation_courante(adhesion.id)
+    if cc is None:
+        today = date.today()
+        cc = await cotisations_service.creer_cotisation(adhesion.id, today.year, today.month)
+    try:
+        params_svc = ParametresPaiementService(db)
+        montant_mensuel = await params_svc.get_montant(
+            ParametrePaiementCode.cotisation_mensuelle, date.today()
+        ) or int(getattr(cc, "montant", None) or 0)
+    except Exception:
+        montant_mensuel = int(getattr(cc, "montant", None) or 0)
+    if montant_mensuel <= 0:
+        montant_mensuel = 5
+
+    premier_an = int(getattr(cc, "annee") or date.today().year)
+    premier_mo = int(getattr(cc, "mois") or date.today().month)
+
+    def _gen_periode(start_an, start_mo, nb):
+        mois_l = []
+        a, m = int(start_an), int(start_mo)
+        for _ in range(int(nb)):
+            mois_l.append((a, m))
+            m += 1
+            if m > 12:
+                m = 1
+                a += 1
+        return mois_l
+
+    est_premier_offert = bool(getattr(adhesion, "premier_mois_offert", False))
+    premiere_cotisation_an = getattr(adhesion, "premiere_cotisation_annee", None)
+    premiere_cotisation_mo = getattr(adhesion, "premiere_cotisation_mois", None)
+
+    async def _est_paye(a, m):
+        ligne = await cot_repo.get_for_adherent_mois(adhesion.id, a, m)
+        if not ligne:
+            return False
+        v = str(getattr(ligne, "statut", "") or "")
+        return v == "payee" or "paye" in v.lower()
+
+    labels_periode = {1: "Mensuel", 3: "Trimestriel", 6: "Semestriel", 12: "Annuel"}
+    options: list[ProchainPaiementPeriodeOut] = []
+    for periode in (1, 3, 6, 12):
+        liste_mois = _gen_periode(premier_an, premier_mo, periode)
+        items_details: list[MoisCotisationLabelOut] = []
+        nb_impayes = 0
+        nb_offerts = 0
+        montant_total = 0
+        for (a, m) in liste_mois:
+            paye = await _est_paye(a, m)
+            est_offert = (
+                est_premier_offert
+                and (premiere_cotisation_an is not None and premiere_cotisation_mo is not None)
+                and int(a) == int(premiere_cotisation_an)
+                and int(m) == int(premiere_cotisation_mo)
+            )
+            st = CotisationStatut.payee if paye else (CotisationStatut.impaye if not est_offert else CotisationStatut.payee)
+            items_details.append(MoisCotisationLabelOut(
+                annee=int(a),
+                mois=int(m),
+                label=f"{noms_mois[m - 1] if 1 <= m <= 12 else str(m)} {a}",
+                statut=st,
+            ))
+            if paye:
+                continue
+            if est_offert:
+                nb_offerts += 1
+                continue
+            nb_impayes += 1
+            montant_total += int(montant_mensuel)
+
+        options.append(ProchainPaiementPeriodeOut(
+            periodeMois=int(periode),
+            label=labels_periode.get(int(periode), f"{periode} mois"),
+            montantTotal=montant_total,
+            devise="XOF",
+            premierMoisConcerne=items_details[0] if items_details else None,
+            listeMois=items_details,
+            nbMoisImpayesInclus=int(nb_impayes),
+            nbMoisOffertsInclus=int(nb_offerts),
+        ))
+
+    return ProchainPaiementSuggestionResponse(
+        adhesionId=adhesion.id,
+        adhesionEstValidee=bool(adhesion_est_validee),
+        paiementAdhesionConfirme=bool(paiement_adhesion_confirme),
+        options=options,
+    )
+
+
+@adherent_router.get(
+    "/cotisations/prochaine-suggestion",
+    response_model=ProchainPaiementSuggestionResponse,
+    summary="Mon espace — suggestions de paiement multi-périodes (1/3/6/12 mois)",
+)
+async def ma_cotisation_suggestions(
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await UserRepository(db).get_by_id(principal.user_id)
+    if user is None or not getattr(user, "adhesion_id", None):
+        raise HTTPException(status_code=404, detail="Aucune adhésion liée à votre compte")
+    adhesion_repo = AdhesionRepository(db)
+    adhesion = await adhesion_repo.get_by_id(user.adhesion_id)
+    if not adhesion:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
+    return await _build_suggestion_periode(adhesion, db)
+
+
 # =========================================================================
 # ENDPOINTS ADMIN : CRUD paramètres paiement, dashboard, paiement manuel
 # =========================================================================
@@ -1257,6 +1455,50 @@ async def admin_paiement_manuel_cotisation(
     await db.commit()
     await db.refresh(c)
     return c
+
+
+@admin_router.post(
+    "/adhesions/{adhesion_id}/cotisations/paiement-manuel-periode",
+    response_model=CotisationListResponse,
+    summary="[Admin] Enregistrer un paiement manuel sur 1/3/6/12 mois consécutifs",
+)
+async def admin_paiement_manuel_periode(
+    adhesion_id: uuid.UUID,
+    payload: PaiementManuelPeriodeRequest,
+    annee: int | None = Query(None, description="Année de départ (défaut: aujourd'hui)"),
+    mois: int | None = Query(None, description="Mois de départ 1-12 (défaut: aujourd'hui)"),
+    principal: Principal = Depends(require_roles("admin", "comite_directoire", "coordinateur_regional")),
+    db: AsyncSession = Depends(get_db),
+):
+    adhesion_repo = AdhesionRepository(db)
+    adhesion = await adhesion_repo.get_by_id(adhesion_id)
+    if not adhesion:
+        raise HTTPException(status_code=404, detail="Adhésion introuvable")
+    today = date.today()
+    debut_an = int(annee) if annee else today.year
+    debut_mo = int(mois) if mois else today.month
+    if not (1 <= debut_mo <= 12):
+        raise HTTPException(status_code=400, detail="mois doit être entre 1 et 12")
+    periode = PeriodePaiement.normaliser(payload.periode_mois)
+    mois_consecutifs = CotisationMensuelleRepository.calculer_mois_consecutifs(
+        debut_an, debut_mo, periode
+    )
+    service = CotisationsService(db)
+    cot_repo = CotisationMensuelleRepository(db)
+    resultats: list = []
+    for (a, m) in mois_consecutifs:
+        cc = await cot_repo.get_or_create_for_adherent_mois(adhesion.id, int(a), int(m))
+        ligne = await service.paiement_manuel(
+            cotisation_id=cc.id,
+            user_id=principal.user_id,
+            note=payload.note,
+            reference_paiement=payload.reference_paiement,
+        )
+        resultats.append(ligne)
+    await db.commit()
+    for r in resultats:
+        await db.refresh(r)
+    return {"data": resultats, "total": len(resultats)}
 
 
 @admin_router.get(

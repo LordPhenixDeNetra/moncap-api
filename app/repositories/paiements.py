@@ -11,6 +11,7 @@ from app.models.paiements import (
     CotisationMensuelle,
     CotisationStatut,
     ParametrePaiement,
+    PeriodePaiement,
     StatutTransactionKopar,
     TransactionKopar,
 )
@@ -216,6 +217,152 @@ class CotisationMensuelleRepository:
         c.mode_paiement = "manuel"
         await self.session.flush()
         return c
+
+    @staticmethod
+    def calculer_mois_consecutifs(
+        from_annee: int, from_mois: int, nb_mois: int
+    ) -> list[tuple[int, int]]:
+        """Calcule N (annee, mois) consécutifs à partir d'un point de départ (mois inclus)."""
+        result: list[tuple[int, int]] = []
+        if nb_mois is None or nb_mois < 1:
+            nb_mois = 1
+        an, mo = int(from_annee), int(from_mois)
+        for _ in range(int(nb_mois)):
+            result.append((an, mo))
+            mo += 1
+            if mo > 12:
+                mo = 1
+                an += 1
+        return result
+
+    async def get_or_create_for_adherent_mois(
+        self,
+        adhesion_id: uuid.UUID,
+        annee: int,
+        mois: int,
+        *,
+        montant_defaut: int | None = None,
+        devise: str = "XOF",
+    ) -> CotisationMensuelle:
+        c = await self.get_for_adherent_mois(adhesion_id, annee, mois)
+        if c is not None:
+            return c
+        c = CotisationMensuelle(
+            adhesion_id=adhesion_id,
+            annee=annee,
+            mois=mois,
+            montant=int(montant_defaut or 0),
+            devise=devise or "XOF",
+            statut=CotisationStatut.en_attente,
+        )
+        self.session.add(c)
+        await self.session.flush()
+        return c
+
+    async def mark_paid_periode(
+        self,
+        tx: TransactionKopar,
+        *,
+        reference_paiement: str,
+        mode_paiement: str,
+        paiement_date: datetime | None = None,
+        paiement_manuel_user_id: uuid.UUID | None = None,
+        paiement_manuel_note: str | None = None,
+    ) -> list[CotisationMensuelle]:
+        """
+        Marque N=tx.periode_mois lignes mensuelles comme payées (idempotent : skippe les payées).
+
+        tx.cotisation_id = PREMIER mois de la période (point d'ancrage).
+        Cas spéciaux :
+          • tx.periode_mois NULL/1 → exactement 1 ligne (comme aujourd'hui, retro OK)
+          • tx.periode_mois IN (3,6,12) → N lignes consécutives
+          • ligne inexistante (mois futurs pas encore générés par CRON) → CRÉÉE PUIS marquée
+          • ligne déjà payée → SKIP sans erreur (double webhook / double paiement OK)
+        """
+        result: list[CotisationMensuelle] = []
+        if tx is None:
+            return result
+        periode = PeriodePaiement.normaliser(tx.periode_mois)
+        if tx.type_transaction.value != "cotisation" if hasattr(tx.type_transaction, "value") else str(tx.type_transaction) != "cotisation":
+            return result
+        premier = None
+        if tx.cotisation_id:
+            premier = await self.get_by_id(tx.cotisation_id)
+        if premier is None:
+            return result
+        adhesion_id = premier.adhesion_id
+        from_annee = premier.annee
+        from_mois = premier.mois
+        if tx.premiere_annee_couverte and tx.premier_mois_couverte:
+            from_annee = int(tx.premiere_annee_couverte)
+            from_mois = int(tx.premier_mois_couverte)
+        liste_mois = self.calculer_mois_consecutifs(from_annee, from_mois, periode)
+        paiement_ts = paiement_date or datetime.now(timezone.utc)
+        ref_p = str(reference_paiement or tx.kopar_token or "")[:200] or None
+        mode_p = str(mode_paiement or "kopar") or None
+        montant_defaut_mois = premier.montant or getattr(premier, "montant", None) or 0
+        devise_mois = premier.devise or "XOF"
+        manuel = bool(paiement_manuel_user_id)
+        for (an, mo) in liste_mois:
+            c = await self.get_or_create_for_adherent_mois(
+                adhesion_id,
+                an,
+                mo,
+                montant_defaut=montant_defaut_mois,
+                devise=devise_mois,
+            )
+            statut_valeur = c.statut.value if hasattr(c.statut, "value") else str(c.statut)
+            if statut_valeur == "payee":
+                continue
+            c.statut = CotisationStatut.payee
+            c.paiement_date = paiement_ts
+            if ref_p:
+                c.reference_paiement = ref_p
+            if mode_p:
+                c.mode_paiement = mode_p
+            if manuel:
+                c.paiement_manuel = True
+                c.paiement_manuel_par_user_id = paiement_manuel_user_id
+                if paiement_manuel_note:
+                    c.paiement_manuel_note = str(paiement_manuel_note)[:500]
+            await self.session.flush()
+            result.append(c)
+        return result
+
+    async def mark_manuel_periode(
+        self,
+        premier_cotisation_id: uuid.UUID,
+        periode_mois: int,
+        *,
+        user_id: uuid.UUID,
+        note: str | None = None,
+        reference_paiement: str | None = None,
+    ) -> list[CotisationMensuelle]:
+        """Paiement MANUEL ADMIN multi-périodes (pas de transaction Kopar)."""
+        premier = await self.get_by_id(premier_cotisation_id)
+        if premier is None:
+            return []
+        fake_tx = TransactionKopar(
+            id=uuid.uuid4(),
+            type_transaction=TypeTransactionKopar.cotisation,
+            cotisation_id=premier.id,
+            adhesion_id=premier.adhesion_id,
+            periode_mois=PeriodePaiement.normaliser(periode_mois),
+            premiere_annee_couverte=premier.annee,
+            premier_mois_couverte=premier.mois,
+            kopar_token="",
+            command_ref="",
+            command_name="",
+            montant=0,
+        )
+        return await self.mark_paid_periode(
+            fake_tx,
+            reference_paiement=str(reference_paiement or "")[:200] or f"MANUEL-{str(premier_cotisation_id)[:8].upper()}",
+            mode_paiement="manuel",
+            paiement_date=datetime.now(timezone.utc),
+            paiement_manuel_user_id=user_id,
+            paiement_manuel_note=note,
+        )
 
     async def list_ids_impayes_mois(
         self,

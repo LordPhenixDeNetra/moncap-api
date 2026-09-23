@@ -124,6 +124,9 @@ class TransactionKoparOut(BaseModel):
     type_transaction: TypeTransactionKopar = Field(alias="typeTransaction")
     adhesion_id: uuid.UUID | None = Field(default=None, alias="adhesionId")
     cotisation_id: uuid.UUID | None = Field(default=None, alias="cotisationId")
+    periode_mois: int | None = Field(default=None, alias="periodeMois")
+    premiere_annee_couverte: int | None = Field(default=None, alias="premiereAnneeCouverte")
+    premier_mois_couverte: int | None = Field(default=None, alias="premierMoisCouverte")
     command_ref: str = Field(alias="commandRef")
     command_name: str = Field(alias="commandName")
     montant: int
@@ -210,3 +213,38 @@ class AdherentEtatCotisationResponse(BaseModel):
 class AdherentEtatCotisationOut(AdherentEtatCotisationResponse):
     """Alias retro-compatibilite. Vaut AdherentEtatCotisationResponse (wrapper)."""
     pass
+
+
+class MoisCotisationLabelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    annee: int
+    mois: int
+    label: str = ""
+    statut: CotisationStatut | None = None
+
+
+class ProchainPaiementPeriodeOut(BaseModel):
+    """Une option de paiement multi-périodes."""
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    periode_mois: int = Field(alias="periodeMois")
+    label: str
+    montant_total: int = Field(alias="montantTotal")
+    devise: str = "XOF"
+    premier_mois_concerne: MoisCotisationLabelOut | None = Field(default=None, alias="premierMoisConcerne")
+    liste_mois: list[MoisCotisationLabelOut] = Field(default_factory=list, alias="listeMois")
+    nb_mois_impayes_inclus: int = Field(default=0, alias="nbMoisImpayesInclus")
+    nb_mois_offerts_inclus: int = Field(default=0, alias="nbMoisOffertsInclus")
+
+
+class ProchainPaiementSuggestionResponse(BaseModel):
+    """Réponse endpoint suggestion paiements (4 périodes)."""
+    adhesion_id: uuid.UUID = Field(alias="adhesionId")
+    adhesion_est_validee: bool = Field(default=False, alias="adhesionEstValidee")
+    paiement_adhesion_confirme: bool = Field(default=False, alias="paiementAdhesionConfirme")
+    options: list[ProchainPaiementPeriodeOut]
+
+
+class PaiementManuelPeriodeRequest(BaseModel):
+    periode_mois: int = Field(default=1, ge=1, le=12, alias="periodeMois")
+    note: str | None = None
+    reference_paiement: str | None = Field(default=None, alias="referencePaiement")

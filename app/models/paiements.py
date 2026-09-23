@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 from sqlalchemy import (
     BigInteger,
@@ -50,6 +50,41 @@ class StatutTransactionKopar(StrEnum):
     failed = "failed"
     cancelled = "cancelled"
     refunded = "refunded"
+
+
+class PeriodePaiement(IntEnum):
+    """Périodes de paiement acceptées (entier = nombre de mois couverts)."""
+    MENSUEL = 1
+    TRIMESTRIEL = 3
+    SEMESTRIEL = 6
+    ANNUEL = 12
+
+    @classmethod
+    def normaliser(cls, v: int | None) -> int:
+        if v is None:
+            return cls.MENSUEL
+        try:
+            vi = int(v)
+        except (TypeError, ValueError):
+            return cls.MENSUEL
+        if vi not in {1, 3, 6, 12}:
+            return cls.MENSUEL
+        return vi
+
+    @classmethod
+    def label(cls, v: int | None) -> str:
+        n = cls.normaliser(v)
+        return {1: "Mensuel", 3: "Trimestriel", 6: "Semestriel", 12: "Annuel"}.get(
+            n, "Mensuel"
+        )
+
+    @classmethod
+    def mois_label(cls, mois: int) -> str:
+        noms = [
+            "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+        ]
+        return noms[mois - 1] if 1 <= mois <= 12 else str(mois)
 
 
 class ParametrePaiement(Base):
@@ -147,6 +182,23 @@ class TransactionKopar(Base):
         ForeignKey("cotisations_mensuelles.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+    periode_mois: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+        comment="Période de paiement en mois (1/3/6/12). NULL = 1 (mensuel, rétrocompatibilité).",
+    )
+    premiere_annee_couverte: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+        comment="Année du PREMIER mois couvert par la transaction multi-périodes (cohérence avec cotisation_id).",
+    )
+    premier_mois_couverte: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Mois (1-12) du PREMIER mois couvert par la transaction multi-périodes.",
     )
     command_ref: Mapped[str] = mapped_column(String(200), index=True)
     command_name: Mapped[str] = mapped_column(String(300))

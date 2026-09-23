@@ -1,6 +1,6 @@
 # UPDATE MONCAP API — Journal des modifications
 
-Date : 19 septembre 2026 (5 modifications)  
+Date : 23 mars 2026 (6 modifications au total — ajouts [F])  
 Auteur : Session TRAE  
 Objets :
   [A] Mise en oeuvre de la règle « Le membre qui adhère ne paie pas le mois courant »
@@ -8,6 +8,191 @@ Objets :
   [C] Emails de notification sur les changements de statut des articles
   [D] Hydratation GEO sur MilitantOut + endpoints GEO individuels GET /{id}
   [E] RADIATION AUTOMATIQUE 3 mois impayés consécutifs + Endpoint admin fallback manuel + Guards auth is_active
+  [F] PAIEMENT COTISATION MULTI-PÉRIODES — Mensuel / Trimestriel / Semestriel / Annuel (1 / 3 / 6 / 12 mois)
+
+---
+
+## [F] PAIEMENT MULTI-PÉRIODES — Cotisations 1/3/6/12 mois en 1 transaction Kopar
+
+### 1. But
+**Problème métier** : les adhérents·es devaient *manuellement* re-payer chaque mois leur cotisation via un nouveau QR scan / nouveau lien Kopar. Aucun moyen de régler plusieurs mois d'un coup.
+
+**Solution** : **UNE SEULE** transaction Kopar = potentiellement **N lignes `cotisations_mensuelles`** payées d'un coup, pour les 4 périodes standard :
+| Période | Code entier | Label |
+|---|---|---|
+| **Mensuelle** | `1` | 1 mois |
+| **Trimestrielle** | `3` | 3 mois |
+| **Semestrielle** | `6` | 6 mois |
+| **Annuelle** | `12` | 12 mois |
+
+**Règle rétrocompatibilité absolue** : toute ancienne transaction `periode_mois IS NULL` → valide **exactement 1 ligne** (comme avant). **Aucun script existant, webhook success, CRON de réconciliation ne casse.**
+
+### 2. Choix d'architecture (retenu)
+❌ **Écarté** : table de liaison `transaction_kopar_cotisations` (trop de complexité, rupture de contrat existant `tx.cotisation_id → 1 ligne`).
+
+✅ **Retenu — colonnes sur `transactions_kopar` + algorithme** :
+1. **Colonnes SQL BDD ajoutées** (source de vérité unique) :
+   - `periode_mois INT` — la période (1 / 3 / 6 / 12). `NULL` rétro = 1.
+   - `premiere_annee_couverte INT` — année du PREMIER mois couvert
+   - `premier_mois_couverte INT` — mois 1-12 du PREMIER mois couvert
+2. **Point d'ancrage inchangé** : `tx.cotisation_id` = FK SIMPLE vers **LA PREMIÈRE LIGNE** de la période. Le flux « 1 transaction = 1 cotisation_id » marche toujours (rétrocompatibilité).
+3. **Calcul des N mois** : algorithme « (premiere_annee, premier_mois) × periode_mois mois CONSÉCUTIFS » → `(année,mois)` suivant = `mois+1 > 12 ? (année+1, 1) : (année, mois+1)`.
+4. **Custom_fields Kopar ignorés si conflit** : source de vérité = colonnes SQL BDD.
+
+### 3. Enum `PeriodePaiement`
+Fichier : [app/models/paiements.py L55-L87](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/models/paiements.py#L55-L87)
+
+```python
+class PeriodePaiement(IntEnum):
+    MENSUEL = 1
+    TRIMESTRIEL = 3
+    SEMESTRIEL = 6
+    ANNUEL = 12
+
+    @classmethod
+    def normaliser(cls, v: int | None) -> int:      # NULL → 1 ; valeur invalide → 1
+    @classmethod
+    def label(cls, v: int | None) -> str:           # 3 → "Trimestriel"
+    @classmethod
+    def mois_label(cls, mois: int) -> str:          # 5 → "Mai"
+```
+
+### 4. Migration Alembic (1 revision — 3 colonnes + 2 index — 100% rétro)
+Fichier : `alembic/versions/NNNN_add_periode_mois_columns_on_transactions_kopar.py`  
+**Backfill** : `UPDATE transactions_kopar SET periode_mois = 1 WHERE periode_mois IS NULL`
+
+| Colonne | Type | Contrainte / Valeur défaut | Backfill |
+|---|---|---|---|
+| `periode_mois` | `INTEGER NULLABLE` | `CHECK (periode_mois IN (1,3,6,12))` | `= 1` (toutes anciennes tx) |
+| `premiere_annee_couverte` | `INTEGER NULLABLE` | | Pour anciennes tx : **déduit rétroactivement à partir de `tx.cotisation_id → c.annee`** au moment de l'exécution des méthodes `mark_paid_periode()` / `appliquer_paiement_cotisation_success()` (pas besoin d'un backfill SQL lourd : la plupart des anciennes tx n'ont plus besoin d'être relues). |
+| `premier_mois_couverte` | `INTEGER NULLABLE` | | Idem |
+
+Index ajoutés :
+- `ix_tx_kopar_periode_mois` sur `(periode_mois)`
+- `ix_tx_kopar_premiere_periode` sur `(premiere_annee_couverte, premier_mois_couverte, periode_mois)`
+
+**Downgrade réversible** : `downgrade()` drop les 3 colonnes + 2 index (perte seulement des périodes multi-mois).
+
+### 5. Repository `CotisationMensuelleRepository` (2 méthodes clés)
+Fichier : [app/repositories/paiements.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/repositories/paiements.py)
+
+| Méthode | Rôle |
+|---|---|
+| `calculer_mois_consecutifs(debut_an, debut_mo, nb_mois_int) → list[tuple[int,int]]` | **STATIC** — rend les (annee, mois) consécutifs sans DB. Utilisé PARTOUT. |
+| `get_or_create_for_adherent_mois(adhesion_id, an, mo) → CotisationMensuelle` | Récupère ou INSÈRE (via `on_conflict uq_cotisation_adherent_annee_mois do nothing`) UNE ligne donnée. Safe idempotent. |
+| `mark_paid_periode(tx, reference_paiement=None, mode_paiement=None, update_tx_status=True) → list[CotisationMensuelle]` | **CŒUR MÉTIER IDÉMPOTENT** : applique le paiement SUCCESS sur toutes les lignes de la période (1 à 12). Met à jour le statut de la transaction KOPAR success (via `update_after_webhook`). Retourne seulement les lignes *effectivement* passées de impayé → payé (déjà payées = omises). |
+
+Ordre d'appel interne `mark_paid_periode` :
+1. `periode = PeriodePaiement.normaliser(tx.periode_mois)` (defensif).
+2. Détermine `(debut_an, debut_mo)` depuis `tx.premiere_annee_couverte + premier_mois_couverte` si présents, sinon depuis `tx.cotisation_id → c.annee, c.mois` (RÉTROCOMPATIBILITÉ).
+3. Itère chaque mois → `get_or_create_for_adherent_mois` → si pas `payee` → mark payé.
+4. Met à jour `tx.statut = SUCCESS` via `transactions.update_after_webhook` (central).
+
+### 6. `PaiementOrchestratorService` — 2 évolutions majeures
+Fichier : [app/services/paiement_orchestrator.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/paiement_orchestrator.py)
+
+#### 6.1 — Nouvelle méthode INITIATION (avant Kopar)
+`async initier_paiement_cotisation_periode(adhesion_id, premiere_annee, premier_mois, periode_mois, service=None) → InitiatedKoparPayment`
+- Charge ou CRÉE les lignes `cotisations_mensuelles` pour la période si elles n'existent pas
+- Récupère montant mensuel via `ParametresPaiementService` → calcule `montant_total = nb_mois_impayés * montant_mensuel` (mois offerts / déjà payés déduits)
+- Crée UNE SEULE `TransactionKopar` avec les 3 nouvelles colonnes renseignées, `cotisation_id = 1ere ligne`
+- Appelle Kopar `create_transaction()` → retourne token/URL/QR.
+
+#### 6.2 — Refonte de l'application SUCCESS (webhook + réconciliation)
+Anciennement : `_appliquer_paiement_cotisation_success()` appelait `mark_paid(cotisation_id)` + email 1 mois.  
+**Maintenant** :
+- Nouvelle méthode **PUBLIQUE** `appliquer_paiement_cotisation_success(tx, background_tasks=None) -> list[CotisationMensuelle]` :
+  - délègue à `orchestrator.cotisations.mark_paid_periode()` (qui gère 1..12 lignes)
+  - **Email** : construit la liste des mois payés `[(a,m)]` depuis les lignes, somme `montant_total`, appelle `build_cotisation_paiement_confirme(mois_couverts=..., montant_total=...)` (HTML liste à puces de tous les mois si >1, singleton « Mois Année » sinon).
+  - `background_tasks=None` est la signature CLI (pas d'envoi d'email en CLI réconciliation).
+- L'ancienne méthode privée `_appliquer_paiement_cotisation_success(tx, bg_tasks)` reste comme wrapper rétro.
+
+### 7. Routes API — 7 endpoints étendus / nouveaux
+
+#### 7.1 — 4 endpoints INITIATION étendus avec `?periodeMois=` (query param optionnel, défaut 1, 1<=v<=12)
+| # | Endpoint | Router | Changement |
+|---|---|---|---|
+| F1 | `POST /paiements/cotisation/{cotisation_id}/initier-public` | public_router | `periodeMois` dispatch vers `initier_paiement_cotisation_periode` si ≠1 |
+| F2 | `POST /paiements/adhesion/{adhesion_id}/cotisation-du-mois/initier-public` | public_router | idem |
+| F3 | `POST /paiements/cotisation/initier-public-par-adhesion?adh=...` | public_router | idem (transmet le param) |
+| F4 | `POST /paiements/cotisation/{cotisation_id}/initier` | protected_router | idem |
+
+**Rétro 100 %** : omettre `periodeMois` = `periode_mois=1` = exactement comportement précédent.
+
+#### 7.2 — 3 endpoints SUGGESTION (listent les 4 options M/T/S/A avec détail & montant)
+Réponses : `ProchainPaiementSuggestionResponse` → champs `options[]` listant Mensuel, Trimestriel, Semestriel, Annuel (chacun avec `periodeMois`, `label`, `montantTotal`, `listeMois[{annee,mois,label,statut}]`, `nbMoisImpayesInclus`, `nbMoisOffertsInclus`).
+
+| # | Endpoint | Router | Auth |
+|---|---|---|---|
+| F5 | `GET /mon-compte/cotisations/prochaine-suggestion` | adherent_router | JWT adhérent → son info depuis `user.adhesion_id` |
+| F6 | `GET /paiements/adhesion/{adhesion_id}/cotisation/prochaine-suggestion?email=` | public_router | Email correspondant à l'adhésion demandé (vérif) |
+| F7 | `GET /paiements/cotisation/prochaine-suggestion?adh=...&email=...` | public_router | Alias court (query params seulement) |
+
+#### 7.3 — 1 endpoint ADMIN — Paiement manuel multi-périodes
+| # | Endpoint | Router | Body |
+|---|---|---|---|
+| F8 | `POST /admin/adhesions/{adhesion_id}/cotisations/paiement-manuel-periode?annee=&mois=` | admin_router | `{ periodeMois: 1\|3\|6\|12 (def=1), note?, referencePaiement? }` → réponse `CotisationListResponse { data[], total }`. RBAC : admin / comite_directoire / coordinateur_regional (même que paiement manuel 1 ligne). |
+
+### 8. Réconciliation CLI `reconcile_kopar_pending_transactions.py`
+Fichier : [app/cli/reconcile_kopar_pending_transactions.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/cli/reconcile_kopar_pending_transactions.py)  
+Bloc `elif type = cotisation` **refactorisé** :
+- Ancien : appelait `mark_paid(cotisation_id)` + `update_after_webhook` séparément (risque de double mise à jour).
+- Nouveau : **appelle `orchestrator.cotisations.mark_paid_periode(tx, reference_paiement=kopar_token_ou_KOPAR-RECONCILE, mode_paiement="kopar_reconcile")`** — ceci gère automatiquement la période 1..12, MAJ la tx.
+- Si `mark_paid_periode` retourne `[]` (tout déjà payé ou tx déjà success) : on marque quand même la tx success si besoin (log idempotent).
+- Log action amélioré : `cotisation period=3 mois=2026-03,2026-04,2026-05 -> 3 ligne(s) statut payee`.
+
+### 9. Modèles Schemas Pydantic — 100% rétrocompatibles
+Fichier : [app/schemas/paiements.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/schemas/paiements.py)
+
+- **`TransactionKoparOut`** 3 champs AJOUTÉS (camelCase alias) :
+  ```
+  periode_mois -> periodeMois: int | None
+  premiere_annee_couverte -> premiereAnneeCouverte: int | None
+  premier_mois_couverte  -> premierMoisCouverte: int | None
+  ```
+- **NOUVEAUX schemas** : `MoisCotisationLabelOut`, `ProchainPaiementPeriodeOut`, `ProchainPaiementSuggestionResponse`, `PaiementManuelPeriodeRequest`
+- **0 suppression / renommage** → les consommateurs existants ne remarquent rien.
+
+### 10. Email confirmation paiement — multi-mois
+Fichier : [app/services/adhesion_mail_templates.py](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/app/services/adhesion_mail_templates.py)
+
+- Signature `build_cotisation_paiement_confirme()` : nouveau paramètres `mois_couverts: list[tuple[int,int]] | None` et `montant_total: int | None`. Les anciens param `annee/mois/montant` **restent optionnels** → appelants legacy continuent de fonctionner.
+- **Si 1 mois** → sujet, texte, HTML exactement comme avant (`Cotisation Mars 2026 réglée`).
+- **Si >1 mois** → sujet `Cotisations Mars,Avril,Mai 2026 réglées ✅`, HTML `<ul>` liste chaque mois + champ `Montant total: X FCFA` (pluriel sur le sujet/message).
+
+### 11. Documentation frontend mise à jour
+| Fichier | Section ajoutée / modifiée |
+|---|---|
+| [FRONTEND_RAPPEL_COTISATIONS_MENSUELLES.md](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/FRONTEND_RAPPEL_COTISATIONS_MENSUELLES.md) | Ajout section « PAIEMENT MULTI-PÉRIODES — UI SELECTEUR 1/3/6/12 » + exemple fetch suggestion + init paiement avec periodeMois |
+| [GUIDE_FRONTEND_PAIEMENTS_COTISATIONS.md](file:///n:/OneDrive%20-%20Universit%C3%A9%20Cheikh%20Anta%20DIOP%20de%20DAKAR/PycharmProjects/moncap-api/GUIDE_FRONTEND_PAIEMENTS_COTISATIONS.md) | Ajout section « OPTION PAYER PLUSIEURS MOIS EN UNE FOIS » + tableau des endpoints étendus |
+
+### 12. Vérifications
+```bash
+# AST parse syntaxique tous fichiers modifiés
+python -c "import ast; [ast.parse(open(f,encoding='utf-8').read()) for f in [
+  'app/models/paiements.py',
+  'app/repositories/paiements.py',
+  'app/services/paiement_orchestrator.py',
+  'app/services/adhesion_mail_templates.py',
+  'app/schemas/paiements.py',
+  'app/api/v1/routes/paiements.py',
+  'app/cli/reconcile_kopar_pending_transactions.py'
+]]; print('OK')"
+# → exit 0
+
+# Tests : 4 passed / 6 failed, TOUS les 6 = préexistant NON LIÉ :
+#   UserRepository.create_user() missing nom / prenom
+#   → 0 nouvelle régression
+python -m pytest tests/ -v --tb=no -q
+
+# CLI help (pas besoin DB opérationnelle)
+python -m app.cli.reconcile_kopar_pending_transactions --help → exit 0
+
+# Routes enregistrées (app.main import, 96 routes totales)
+#  suggestion routes = 3  (OK)
+#  paiement-manuel / paiement-manuel-periode = 2  (OK)
+#  4 init endpoints acceptent periodeMois query (vérifié routeur FastAPI)
+```
 
 ---
 

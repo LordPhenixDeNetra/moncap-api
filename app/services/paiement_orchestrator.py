@@ -16,6 +16,7 @@ from app.models.enums import AdhesionStatus
 from app.models.paiements import (
     CotisationMensuelle,
     CotisationStatut,
+    PeriodePaiement,
     StatutTransactionKopar,
     TransactionKopar,
     TypeTransactionKopar,
@@ -103,12 +104,18 @@ class PaiementOrchestratorService:
         success_url: str | None = None,
         cancel_url: str | None = None,
         custom_fields: dict | None = None,
+        periode_mois: int | None = None,
+        premiere_annee_couverte: int | None = None,
+        premier_mois_couverte: int | None = None,
     ) -> TransactionKopar:
         tx = TransactionKopar(
             kopar_token=kopar_token,
             type_transaction=type_tx,
             adhesion_id=adhesion_id,
             cotisation_id=cotisation_id,
+            periode_mois=periode_mois,
+            premiere_annee_couverte=premiere_annee_couverte,
+            premier_mois_couverte=premier_mois_couverte,
             command_ref=command_ref,
             command_name=command_name,
             montant=montant,
@@ -301,15 +308,50 @@ class PaiementOrchestratorService:
         force: bool = False,
         service: str | None = None,
     ) -> KoparPaiementInitie:
-        c = await self.cotisations.get_by_id(cotisation_id)
+        return await self.initier_paiement_cotisation_periode(
+            cotisation_id,
+            periode_mois=PeriodePaiement.MENSUEL,
+            force=force,
+            service=service,
+        )
+
+    async def initier_paiement_cotisation_periode(
+        self,
+        premier_cotisation_id: uuid.UUID,
+        *,
+        periode_mois: int = PeriodePaiement.MENSUEL,
+        force: bool = False,
+        service: str | None = None,
+    ) -> KoparPaiementInitie:
+        periode = PeriodePaiement.normaliser(periode_mois)
+        c = await self.cotisations.get_by_id(premier_cotisation_id)
         if not c:
             raise HTTPException(status_code=404, detail="Cotisation introuvable")
-        if c.statut == CotisationStatut.payee and not force:
-            raise HTTPException(status_code=409, detail="Cotisation déjà payée")
         adhesion = await self.adhesions.get_by_id(c.adhesion_id)
         if not adhesion:
             raise HTTPException(status_code=404, detail="Adhérent introuvable")
-        command_ref = f"COT-{str(c.id)}"
+        liste_mois = self.cotisations.calculer_mois_consecutifs(c.annee, c.mois, periode)
+        if periode == 1 and c.statut == CotisationStatut.payee and not force:
+            raise HTTPException(status_code=409, detail="Cotisation déjà payée")
+        if periode > 1 and not force:
+            all_suivants = []
+            for (an, mo) in liste_mois[1:]:
+                c_suiv = await self.cotisations.get_for_adherent_mois(c.adhesion_id, an, mo)
+                all_suivants.append(c_suiv)
+            if c.statut == CotisationStatut.payee and all(
+                (x is not None and (x.statut.value if hasattr(x.statut, "value") else str(x.statut)) == "payee")
+                for x in all_suivants if x is not None
+            ):
+                raise HTTPException(status_code=409, detail="Toutes les cotisations de la période sont déjà payées")
+        montant_mensuel = int(c.montant or 0) or int(getattr(c, "montant", None) or 0)
+        if montant_mensuel <= 0:
+            montant_mensuel = int(self.settings.default_cotisation_mensuelle_fcfa or 5)
+            c.montant = montant_mensuel
+        montant_total = montant_mensuel * periode
+        suffixe_cmd = f"P{periode}" if periode > 1 else ""
+        command_ref = f"COT{suffixe_cmd}-{str(c.id)}" if suffixe_cmd else f"COT-{str(c.id)}"
+        if periode > 1:
+            command_ref = f"COTP-{periode}-{str(c.id)}"
         prev_txs = await self.transactions.get_by_command_ref(command_ref)
         if prev_txs:
             prev = sorted(prev_txs, key=lambda t: t.created_at or datetime.min, reverse=True)[0]
@@ -325,11 +367,17 @@ class PaiementOrchestratorService:
                     token=prev.kopar_token,
                     payment_url=prev_payment_url,
                     qr_code=getattr(prev, "qr_code", None),
-                    montant=int(getattr(prev, "montant", c.montant) or 0) or int(c.montant or 0),
+                    montant=int(getattr(prev, "montant", montant_total) or 0) or montant_total,
                     devise=getattr(prev, "devise", "XOF") or "XOF",
                     provider_response=prev.raw_response or {},
                 )
-        command_name = f"Cotisation MONCAP {c.mois:02d}/{c.annee}"
+        if periode == 1:
+            command_name = f"Cotisation MONCAP {c.mois:02d}/{c.annee}"
+        else:
+            dernier_an, dernier_mo = liste_mois[-1]
+            premier_label = f"{c.mois:02d}/{c.annee}"
+            dernier_label = f"{dernier_mo:02d}/{dernier_an}"
+            command_name = f"Cotisation MONCAP {PeriodePaiement.label(periode)} ({premier_label} → {dernier_label})"
         ipn_url, success_url, cancel_url = self._build_urls(
             type_tx="cotisation", adhesion_id=c.adhesion_id, cotisation_id=c.id
         )
@@ -339,6 +387,9 @@ class PaiementOrchestratorService:
             "annee": c.annee,
             "mois": c.mois,
             "type": "cotisation",
+            "periode_mois": periode,
+            "premiere_annee_couverte": c.annee,
+            "premier_mois_couverte": c.mois,
         }
         cni_cot = getattr(adhesion, "cni", None) or ""
         ddn_cot = getattr(adhesion, "date_naissance", None)
@@ -374,7 +425,7 @@ class PaiementOrchestratorService:
             "serviceId": service_eff_cot,
         }
         initie = await self.kopar.creer_transaction(
-            item_price=c.montant,
+            item_price=montant_total,
             command_name=command_name,
             command_ref=command_ref,
             ipn_url=ipn_url,
@@ -409,7 +460,7 @@ class PaiementOrchestratorService:
         user_kyc_cot = user_kyc_cot_before
         bank_details_cot = bank_details_cot_before
         raw_request_camel = {
-            "itemPrice": c.montant,
+            "itemPrice": montant_total,
             "commandName": command_name,
             "commandRef": command_ref,
             "ipnUrl": ipn_url,
@@ -431,7 +482,7 @@ class PaiementOrchestratorService:
             cotisation_id=c.id,
             command_ref=command_ref,
             command_name=command_name,
-            montant=c.montant,
+            montant=montant_total,
             kopar_token=initie.token,
             raw_request=raw_request_camel,
             raw_response=initie.provider_response or {"token": initie.token},
@@ -443,6 +494,9 @@ class PaiementOrchestratorService:
             success_url=success_url,
             cancel_url=cancel_url,
             custom_fields=custom_fields,
+            periode_mois=periode,
+            premiere_annee_couverte=c.annee,
+            premier_mois_couverte=c.mois,
         )
         return initie
 
@@ -556,21 +610,27 @@ class PaiementOrchestratorService:
             except Exception:
                 pass
 
-    async def _appliquer_paiement_cotisation_success(
+    async def appliquer_paiement_cotisation_success(
         self,
         tx: TransactionKopar,
-        background_tasks: BackgroundTasks | None,
-    ) -> None:
+        background_tasks: BackgroundTasks | None = None,
+    ) -> list[CotisationMensuelle]:
+        """
+        Applique la validation Kopar success sur la transaction.
+        - Utilise mark_paid_periode() (idempotent).
+        - Retourne la liste des lignes marquées payées (vide si déjà payée).
+        - PUBLIC : réutilisable depuis la réconciliation CLI (qui n'a pas BackgroundTasks).
+        """
         if not tx.cotisation_id:
-            return
-        c = await self.cotisations.mark_paid(
-            tx.cotisation_id,
+            return []
+        lignes_payees = await self.cotisations.mark_paid_periode(
+            tx,
             reference_paiement=tx.kopar_token,
             mode_paiement=tx.service or "kopar",
         )
-        if not c:
-            return
-        adhesion = await self.adhesions.get_by_id(c.adhesion_id)
+        if not lignes_payees:
+            return []
+        adhesion = await self.adhesions.get_by_id(lignes_payees[0].adhesion_id)
         if (
             adhesion
             and self.settings.mail_enabled
@@ -578,12 +638,26 @@ class PaiementOrchestratorService:
             and background_tasks is not None
         ):
             try:
+                mois_couverts: list[tuple[int, int]] = []
+                montant_total = 0
+                for cc in lignes_payees:
+                    mois_couverts.append((int(cc.annee), int(cc.mois)))
+                    montant_total += int(getattr(cc, "montant", None) or 0)
+                if not mois_couverts:
+                    if tx.premiere_annee_couverte and tx.premier_mois_couverte:
+                        periode = PeriodePaiement.normaliser(tx.periode_mois)
+                        mois_couverts = self.cotisations.calculer_mois_consecutifs(
+                            int(tx.premiere_annee_couverte),
+                            int(tx.premier_mois_couverte),
+                            periode,
+                        )
+                if montant_total <= 0:
+                    montant_total = int(getattr(tx, "montant", None) or 0)
                 subject, text, html = build_cotisation_paiement_confirme(
                     adhesion=adhesion,
                     base_url=self.settings.public_base_url or "",
-                    annee=c.annee,
-                    mois=c.mois,
-                    montant=c.montant,
+                    mois_couverts=mois_couverts,
+                    montant_total=montant_total,
                     reference=tx.kopar_token,
                 )
                 background_tasks.add_task(
@@ -596,3 +670,12 @@ class PaiementOrchestratorService:
                 )
             except Exception:
                 pass
+        return lignes_payees
+
+    async def _appliquer_paiement_cotisation_success(
+        self,
+        tx: TransactionKopar,
+        background_tasks: BackgroundTasks | None,
+    ) -> None:
+        """Wrapper privé rétro-compatible (anciens appels)."""
+        await self.appliquer_paiement_cotisation_success(tx, background_tasks)

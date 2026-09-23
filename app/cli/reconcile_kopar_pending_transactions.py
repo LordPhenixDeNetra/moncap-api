@@ -163,23 +163,52 @@ async def _apply_success_on_business_records(
                     StatutTransactionKopar.success,
                     webhook_body={"reconcile_job": True, "method": "kopar_get_transaction_poll"},
                 )
-        elif tx.type_transaction == TypeTransactionKopar.cotisation and tx.cotisation_id:
-            cot = await _get_cotisation(db, tx.cotisation_id)
-            if cot is None:
-                actions.append("cotisation introuvable (skip)")
+        elif tx.type_transaction == TypeTransactionKopar.cotisation:
+            if not tx.cotisation_id:
+                actions.append("cotisation_id manquant sur tx (skip)")
             else:
-                await orchestrator.cotisations.mark_paid(
-                    tx.cotisation_id,
-                    reference_paiement=f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}",
+                from app.models.paiements import PeriodePaiement
+
+                try:
+                    _ = PeriodePaiement.normaliser(tx.periode_mois)
+                except Exception:
+                    tx.periode_mois = 1
+                ref = (
+                    f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}"
+                    if not getattr(tx, "kopar_token", None)
+                    else (getattr(tx, "kopar_token") or f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}")
+                )
+                lignes = await orchestrator.cotisations.mark_paid_periode(
+                    tx,
+                    reference_paiement=ref,
                     mode_paiement="kopar_reconcile",
-                    paiement_date=datetime.now(timezone.utc),
+                    update_tx_status=True,
                 )
-                actions.append(f"cotisation {tx.cotisation_id} -> statut payee")
-                await orchestrator.transactions.update_after_webhook(
-                    tx.id,
-                    StatutTransactionKopar.success,
-                    webhook_body={"reconcile_job": True, "method": "kopar_get_transaction_poll"},
-                )
+                if lignes:
+                    annee_mois = [f"{c.annee}-{c.mois:02d}" for c in lignes]
+                    actions.append(
+                        f"cotisation period={getattr(tx, 'periode_mois') or 1} mois="
+                        f"{','.join(annee_mois)} -> {len(lignes)} ligne(s) statut payee"
+                    )
+                else:
+                    if tx.statut == StatutTransactionKopar.success:
+                        actions.append(
+                            f"cotisation {tx.cotisation_id} -> deja payee (idempotent), tx statut deja success"
+                        )
+                    else:
+                        actions.append(
+                            f"cotisation {tx.cotisation_id} -> aucune ligne marquee (possiblement deja payees)"
+                        )
+                        if tx.statut != StatutTransactionKopar.success:
+                            await orchestrator.transactions.update_after_webhook(
+                                tx.id,
+                                StatutTransactionKopar.success,
+                                webhook_body={
+                                    "reconcile_job": True,
+                                    "method": "kopar_get_transaction_poll",
+                                    "note": "aucune ligne cotisation marquee mais tx marquee success",
+                                },
+                            )
         else:
             actions.append(
                 f"type_transaction={tx.type_transaction} sans adhesion_id/cotisation_id valides (mark success seul)"

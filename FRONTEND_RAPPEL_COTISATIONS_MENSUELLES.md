@@ -258,5 +258,98 @@ GET /api/v1/paiements/parametres-public
 
 ---
 
-**💡 Rappel final Frontend le plus important (TOP PRIORITÉ) :**  
+**💡 Rappel final Frontend le plus important (TOP PRIORITÉ) :**
 Tu utilises **`/parametres-public`** au mount de tes pages `/adhesion` ET `/payer-cotisation` → les montants dans la DB sont la vérité. **Puis tu préfères systématiquement `/initier-public-par-adhesion?adh=XXX`** (le plus simple) à la place de `/cotisation/{id}/initier-public` — tu as moins de variables à gérer !
+
+---
+
+## 🎁 **NOUVEAUTÉ — PAIEMENT MULTI-PÉRIODES (1 / 3 / 6 / 12 MOIS EN 1 CLIC)**
+
+> Activée par défaut, **100% rétrocompatible** : si tu n'ajoutes *aucun* code front, tout continue de marcher en mode « mensuel 1 mois » exactement comme avant.
+
+### **Quand utiliser un paiement multi-périodes**
+Sur l'écran de paiement (scan QR `?adh=XXX` OU espace adhérent « payer ma cotisation »), tu peux proposer un **sélecteur radio / boutons** :
+
+| Option | valeur `periodeMois` | Montant affiché |
+|---|---|---|
+| **Mensuel** | `1` (par défaut) | `option[0].montantTotal` FCFA |
+| **Trimestriel** (3 mois) | `3` | `option[1].montantTotal` FCFA |
+| **Semestriel** (6 mois) | `6` | `option[2].montantTotal` FCFA |
+| **Annuel** (12 mois) | `12` | `option[3].montantTotal` FCFA |
+
+⚠️ Les mois **offerts** et les lignes **déjà payées** sont **déduits automatiquement du `montantTotal`** → tu n'as rien à calculer côté front.
+
+### **Étape 1 — Charger les suggestions (4 options)**
+#### Cas A : Public (après scan QR, pas de JWT)
+```js
+// adh = UUID dans ?adh=XXX ; email = email saisi par l'utilisateur·rice
+const res = await fetch(
+  `/api/v1/paiements/cotisation/prochaine-suggestion` +
+  `?adh=${adh}&email=${encodeURIComponent(email)}`
+);
+const { options } = await res.json(); // options[0..3]
+```
+
+#### Cas B : Espace adhérent (JWT)
+```js
+const res = await fetch(
+  `/api/v1/mon-compte/cotisations/prochaine-suggestion`,
+  { headers: { Authorization: `Bearer ${token}` } }
+);
+const { options } = await res.json();
+```
+
+### **Étape 2 — Afficher chaque option**
+Chaque `option` = `ProchainPaiementPeriodeOut` :
+```typescript
+type ProchainPaiementPeriodeOut = {
+  periodeMois: 1 | 3 | 6 | 12;
+  label: "Mensuel" | "Trimestriel" | "Semestriel" | "Annuel";
+  montantTotal: number;
+  devise: "XOF";
+  premierMoisConcerne: { annee: number; mois: number; label: string; statut: string | null; } | null;
+  listeMois: Array<{ annee: number; mois: number; label: string; statut: string | null; }>;
+  nbMoisImpayesInclus: number;   // compte utile pour UI badge
+  nbMoisOffertsInclus: number;   // compte si l'option contient le mois offert
+};
+```
+
+**Conseil UI** :
+- Badge rouge « +X impayés » si `nbMoisImpayesInclus>0`
+- Badge vert « 1 mois OFFERT inclus » si `nbMoisOffertsInclus>0`
+- Liste `listeMois` → afficher en tooltip ou « déplier » pour voir tous les mois concernés par l'option
+- Bouton radio par défaut = **Mensuel** (valeur sûre)
+
+### **Étape 3 — Initier le paiement avec la période choisie**
+Ajoute juste **`periodeMois=V`** en query string (mêmes endpoints qu'avant !) :
+
+#### Exemple paiement public QR + Trimestriel (`periodeMois=3`) :
+```js
+const body = { email: "moustapha.d@example.com" };
+const res = await fetch(
+  `/api/v1/paiements/cotisation/initier-public-par-adhesion` +
+  `?adh=${adh}&periodeMois=3`,
+  { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) }
+);
+const { koparToken, paymentUrl, qrCode, montant, devise } = await res.json();
+// → redirige vers paymentUrl OU affiche qrCode
+```
+
+**Tous les endpoints d'initiation acceptent `periodeMois`** :
+| Endpoint | Query | Type |
+|---|---|---|
+| `POST /paiements/cotisation/initier-public-par-adhesion?adh=...&periodeMois=` | ✅ `periodeMois` (1..12, défaut=1) | Public |
+| `POST /paiements/adhesion/{id}/cotisation-du-mois/initier-public?periodeMois=` | ✅ | Public |
+| `POST /paiements/cotisation/{cotisation_id}/initier-public?periodeMois=` | ✅ | Public |
+| `POST /paiements/cotisation/{cotisation_id}/initier?periodeMois=` | ✅ | Interne JWT |
+
+### **Étape 4 — Lire les champs periodes sur historique de transactions**
+Sur `TransactionKoparOut` (list admin + détails), 3 nouveaux champs **nullables** :
+- `periodeMois: number|null` — null = ancienne ligne → mensuelle (comportement 1 mois)
+- `premiereAnneeCouverte: number|null` — année du premier mois couvert
+- `premierMoisCouverte: number|null` — mois (1-12) du premier mois couvert
+
+**Règle front sûre** : `periodeEffectif = tx.periodeMois ?? 1`.
+
+---

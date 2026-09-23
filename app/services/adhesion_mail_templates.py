@@ -186,26 +186,96 @@ def build_cotisation_paiement_confirme(
     *,
     adhesion: Adhesion,
     base_url: str | None = None,
-    annee: int,
-    mois: int,
-    montant: int,
+    mois_couverts: list[tuple[int, int]] | None = None,
+    montant_total: int | None = None,
     reference: str,
+    annee: int | None = None,
+    mois: int | None = None,
+    montant: int | None = None,
 ) -> tuple[str, str, str]:
     noms_mois = [
         "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
         "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
     ]
-    mois_label = noms_mois[mois - 1] if 1 <= mois <= 12 else str(mois)
+
+    def _ml(m: int) -> str:
+        return noms_mois[m - 1] if 1 <= m <= 12 else str(m)
+
+    mc: list[tuple[int, int]]
+    if mois_couverts:
+        mc = [(int(a), int(m)) for (a, m) in mois_couverts if 1 <= int(m) <= 12 and 2000 <= int(a) <= 2200]
+    elif annee and mois:
+        mc = [(int(annee), int(mois))]
+    else:
+        mc = []
+    if not mc:
+        mc = [(0, 0)]
+
+    montant_affiche: int
+    if montant_total is not None and montant_total > 0:
+        montant_affiche = int(montant_total)
+    elif montant and montant > 0:
+        montant_affiche = int(montant)
+    elif len(mc) > 0 and mc[0][0]:
+        montant_affiche = int(montant or 0)
+    else:
+        montant_affiche = 0
+
+    singleton = len(mc) == 1
+    if singleton and mc[0][0]:
+        premier_an, premier_mo = mc[0]
+        periode_label = f"{_ml(premier_mo)} {premier_an}"
+    else:
+        an_max = max(a for (a, m) in mc)
+        an_min = min(a for (a, m) in mc)
+        tous_meme_an = an_max == an_min and an_min > 0
+        mois_parts = []
+        for (a, m) in mc:
+            if not (a or m):
+                continue
+            if tous_meme_an:
+                mois_parts.append(_ml(m))
+            else:
+                mois_parts.append(f"{_ml(m)} {a}")
+        periode_label = ", ".join(mois_parts) if mois_parts else "période"
+        if tous_meme_an and an_min:
+            periode_label = ", ".join(mois_parts) + f" {an_min}"
+
     full_name = _format_full_name(adhesion)
-    subject = f"MONCAP — Cotisation {mois_label} {annee} réglée ✅"
+    subject = f"MONCAP — Cotisation {periode_label} réglée{'s' if len(mc) > 1 else ''} ✅"
     link = base_url.rstrip("/") + "/mon-compte/cotisations" if base_url else None
+
+    if singleton:
+        phrase_merci = f"Merci ! Votre cotisation de {periode_label} a bien été réglée."
+    else:
+        phrase_merci = f"Merci ! Vos cotisations pour la période {periode_label} ont bien été réglées."
+
+    lignes_details = []
+    lignes_details_html = []
+    if singleton and mc[0][0]:
+        lignes_details.append(f"Période: {periode_label}")
+        lignes_details_html.append(f'<li><strong>Période</strong>: {escape(periode_label)}</li>')
+    else:
+        lignes_details.append("Mois couverts:")
+        lignes_details_html.append(f'<li><strong>Mois couverts ({len(mc)})</strong>:</li>')
+        lignes_details_html.append("  <ul>")
+        for (a, m) in mc:
+            if not (a or m):
+                continue
+            ml = _ml(m)
+            lignes_details.append(f"  • {ml} {a}")
+            lignes_details_html.append(f"    <li>{escape(ml)} {a}</li>")
+        lignes_details_html.append("  </ul>")
+    lignes_details.append(f"Montant total: {montant_affiche} FCFA")
+    lignes_details_html.append(f'<li><strong>Montant total</strong>: {escape(str(montant_affiche))} FCFA</li>')
+    lignes_details.append(f"Référence paiement: {reference}")
+    lignes_details_html.append(f'<li><strong>Référence</strong>: {escape(reference)}</li>')
 
     text_lines = [
         f"Bonjour {full_name}," if full_name else "Bonjour,",
         "",
-        f"Merci ! Votre cotisation de {mois_label} {annee} a bien été réglée.",
-        f"Montant: {montant} FCFA",
-        f"Référence paiement: {reference}",
+        phrase_merci,
+        *lignes_details,
     ]
     if link:
         text_lines += ["", f"Historique de vos cotisations: {link}"]
@@ -216,12 +286,10 @@ def build_cotisation_paiement_confirme(
     <html>
       <body style="font-family:Arial, sans-serif; line-height:1.5; color:#222;">
         <p>{escape(f"Bonjour {full_name}," if full_name else "Bonjour,")}</p>
-        <p style="color:#1e8449; font-size:16px;"><strong>✅ Cotisation {escape(mois_label)} {annee} réglée</strong></p>
-        <p>Merci ! Votre cotisation mensuelle a bien été réglée.</p>
+        <p style="color:#1e8449; font-size:16px;"><strong>✅ Cotisation{escape("s" if len(mc) > 1 else "")} {escape(periode_label)} réglée{escape("s" if len(mc) > 1 else "")}</strong></p>
+        <p>{escape(phrase_merci)}</p>
         <ul>
-          <li><strong>Période</strong>: {escape(mois_label)} {annee}</li>
-          <li><strong>Montant</strong>: {escape(str(montant))} FCFA</li>
-          <li><strong>Référence</strong>: {escape(reference)}</li>
+          {"".join(lignes_details_html)}
         </ul>
         {f'<p>Historique de vos cotisations: <a href="{link}">{link}</a></p>' if link else ''}
         <p>Merci pour votre engagement, camarade. 🙏</p>
