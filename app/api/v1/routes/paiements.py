@@ -153,22 +153,24 @@ def _build_frontend_payer_cotisation_redirect(
 
 @public_router.get(
     "/cotisation/qr-paiement-direct",
-    summary="(Public GET) QR Permanent → redirect 302 DIRECT vers page Kopar du mois courant (sans formulaire intermédiaire)",
+    summary="(Public GET) QR Permanent → redirect 302 VERS LA PAGE FRONTEND `/payer-cotisation` (flux multi-périodes M/T/S/A géré côté front)",
     description="Endpoint appelé PAR LE SCANNER CAMÉRA iOS/Android quand un adhérent·e scanne son QR permanent. "
-    "URL courtes/simples GET : ?adh=UUID_ADHESION&mois=auto. "
+    "URL courte GET : ?adh=UUID_ADHESION. "
     "Renvoie systématiquement un HTTP 302 FOUND : "
     "(a) adhésion introuvable → /payer-cotisation?adh=UUID&erreur=introuvable ; "
-    "(b) adhésion pas encore payée (frais 25000) → /payer-cotisation?adh=UUID&erreur=adhesion-impayee ; "
-    "(c) cotisation DU MOIS déjà payée → /payer-cotisation?adh=UUID&info=deja-payee&mois=&annee= ; "
-    "(d) sinon : initie transaction Kopar POUR CETTE COTISATION (metadata cotisation_id exact, tâche #3) puis "
-    "redirect Location: https://koparpay.com/payment/orders/{kopar_token}",
+    "(b) adhésion pas encore validée → /payer-cotisation?adh=UUID&erreur=adhesion-en-attente ; "
+    "(c) frais adhésion 25.000 non réglés → /payer-cotisation?adh=UUID&erreur=adhesion-impayee ; "
+    "(d) CAS HEUREUX (défaut multi-périodes) : NE PLUS initier Kopar ici → redirige VERS LA PAGE FRONTEND "
+    "/payer-cotisation?adh=UUID qui affiche les 4 cartes M/T/S/A et gère Kopar elle-même via "
+    "`POST /cotisation/initier-public-par-adhesion?periodeMois=1|3|6|12`. Les query params optionnels "
+    "`mois`/`annee` (héritage QR ancien) sont IGNORÉS.",
     status_code=302,
     response_class=RedirectResponse,
 )
 async def qr_paiement_direct_cotisation(
     adh: uuid.UUID = Query(..., alias="adh", description="UUID adhésion (issu QR permanent)"),
-    mois: int | str | None = Query("auto", alias="mois", description="'auto' = mois courant, ou entier 1-12"),
-    annee: int | str | None = Query("auto", alias="annee", description="'auto' = année courante, ou entier"),
+    mois: int | str | None = Query(None, alias="mois", description="[IGNORÉ — héritage] mois entier 1-12 ou 'auto'"),
+    annee: int | str | None = Query(None, alias="annee", description="[IGNORÉ — héritage] année entier ou 'auto'"),
     db: AsyncSession = Depends(get_db),
 ):
     settings = get_settings()
@@ -189,115 +191,19 @@ async def qr_paiement_direct_cotisation(
         url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="adhesion-impayee")
         return RedirectResponse(url=url, status_code=302)
 
-    today = date.today()
-    if isinstance(mois, str) and str(mois).strip().lower() == "auto":
-        mois_num = today.month
-    else:
-        try:
-            mois_num = int(str(mois).strip())
-        except (TypeError, ValueError):
-            mois_num = today.month
-    if isinstance(annee, str) and str(annee).strip().lower() == "auto":
-        annee_num = today.year
-    else:
-        try:
-            annee_num = int(str(annee).strip())
-        except (TypeError, ValueError):
-            annee_num = today.year
-    if not (1 <= mois_num <= 12):
-        mois_num = today.month
-    if annee_num < 2024 or annee_num > 2100:
-        annee_num = today.year
-
-    svc_cot = CotisationsService(db)
-    cc = await svc_cot.creer_cotisation(adhesion.id, annee_num, mois_num)
-    await db.commit()
-    try:
-        params_svc = ParametresPaiementService(db)
-        montant_ref = await params_svc.get_montant(
-            ParametrePaiementCode.cotisation_mensuelle,
-            date(annee_num, mois_num, 1),
-        )
-        if montant_ref and montant_ref > 0:
-            if (
-                getattr(cc, "montant", None) is None
-                or getattr(cc, "montant", 0) <= 0
-                or abs(getattr(cc, "montant", 0) - montant_ref) > 1
-            ):
-                cc.montant = montant_ref
-    except Exception:
-        if getattr(cc, "montant", None) is None or getattr(cc, "montant", 0) <= 0:
-            cc.montant = settings.default_cotisation_mensuelle_fcfa or 5
-
-    if _statut_est_payee(cc):
-        url = _build_frontend_payer_cotisation_redirect(
-            settings,
-            adh=adh,
-            info="deja-payee",
-            mois=mois_num,
-            annee=annee_num,
-        )
-        return RedirectResponse(url=url, status_code=302)
-
-    orchestrator = PaiementOrchestratorService(db)
-    try:
-        initie = await orchestrator.initier_paiement_cotisation(cc.id, force=False, service=None)
-    except KoparError as e:
-        mapped = "paiement-indisponible"
-        kcode_upper = (e.kopar_error_code or "").upper()
-        no_auth_codes = {
-            "NO_AUTH", "UNAUTHORIZED", "INVALID_API_KEY", "INVALID_CREDENTIALS",
-            "MERCHANT_NOT_ACTIVE", "MERCHANT_INACTIVE", "ACCOUNT_NOT_ACTIVATED",
-            "ACCOUNT_INACTIVE", "AUTH_FAILED", "AUTHENTICATION_FAILED",
-        }
-        invalid_amount_codes = {"INVALID_AMOUNT", "AMOUNT_TOO_LOW", "AMOUNT_TOO_HIGH", "INVALID_ITEM_PRICE"}
-        if kcode_upper in no_auth_codes:
-            mapped = "kopar-no-auth"
-        elif kcode_upper in invalid_amount_codes:
-            mapped = "kopar-montant-invalide"
-        kopar_http = None
-        if isinstance(e.details, dict):
-            kopar_http = e.details.get("_httpKoparStatusCode")
-        await db.rollback()
-        redirect_kwargs: dict[str, Any] = {
-            "adh": adh,
-            "erreur": mapped,
-            "kopar": str(e.kopar_error_code or ""),
-        }
-        if kopar_http is not None:
-            redirect_kwargs["kopar_http"] = str(kopar_http)
-        if mapped == "paiement-indisponible" and not (e.kopar_error_code or "").strip():
-            logger.warning(
-                "[QR-PAIEMENT-DIRECT] Kopar erreur SANS code identifiable pour adhesion=%s cc=%s/%s — http=%s kopar_message=%s details_raw=%s",
-                str(adh), getattr(cc, "annee", None), getattr(cc, "mois", None),
-                kopar_http, e.message, str(e.details)[:800],
-            )
-        url = _build_frontend_payer_cotisation_redirect(settings, **redirect_kwargs)
-        return RedirectResponse(url=url, status_code=302)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(
-            "[QR-PAIEMENT-DIRECT] Exception inattendue init paiement cotisation adhesion=%s cc=%s/%s : %r",
-            str(adh), getattr(cc, "annee", None), getattr(cc, "mois", None), e,
-        )
-        await db.rollback()
-        url = _build_frontend_payer_cotisation_redirect(
-            settings,
-            adh=adh,
-            erreur="paiement-erreur",
-            details=type(e).__name__[:80],
-        )
-        return RedirectResponse(url=url, status_code=302)
-    await db.commit()
-    payment_url = (initie.payment_url or "").strip()
-    if not payment_url and initie.token:
-        kopar_base = (settings.kopar_base_url or "https://koparpay.com").rstrip("/")
-        payment_url = f"{kopar_base}/payment/orders/{initie.token}"
-    if not payment_url:
-        url = _build_frontend_payer_cotisation_redirect(settings, adh=adh, erreur="paiement-indisponible")
-        return RedirectResponse(url=url, status_code=302)
-    return RedirectResponse(url=payment_url, status_code=302)
+    # ————————————————————————————————————————————————————
+    #    NOUVEAU flux multi-périodes (consigne 2026-09-23) :
+    #    On laisse le FRONTEND (/payer-cotisation) gérer :
+    #      - affichage des 4 cartes M/T/S/A
+    #      - choix période par l'adhérent·e
+    #      - appel à POST /cotisation/initier-public-par-adhesion?periodeMois=...
+    #        pour initier Kopar (1 transaction = N mois selon la période)
+    # ————————————————————————————————————————————————————
+    from urllib.parse import urlencode
+    query = urlencode({"adh": str(adhesion.id)})
+    base_front = (getattr(settings, "public_base_url", None) or "").rstrip("/") or "https://moncap.innovamind.tech"
+    frontend_url = f"{base_front}/payer-cotisation?{query}"
+    return RedirectResponse(url=frontend_url, status_code=302)
 
 
 # =========================================================================
