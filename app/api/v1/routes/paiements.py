@@ -555,10 +555,9 @@ async def initier_paiement_cotisation_du_mois_public_par_adhesion(
             )
         else:
             initie = await orchestrator.initier_paiement_cotisation_periode(
-                adhesion_id=adhesion.id,
-                premiere_annee=int(cc.annee),
-                premier_mois=int(cc.mois),
+                cc.id,
                 periode_mois=periode,
+                force=False,
                 service=service,
             )
     except KoparError as e:

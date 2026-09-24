@@ -16,6 +16,7 @@ from app.models.enums import AdhesionStatus
 from app.models.paiements import (
     CotisationMensuelle,
     CotisationStatut,
+    ParametrePaiementCode,
     PeriodePaiement,
     StatutTransactionKopar,
     TransactionKopar,
@@ -38,6 +39,7 @@ from app.services.kopar import (
     webhook_statut_to_enum,
 )
 from app.services.mail import send_email_best_effort
+from app.services.paiements import ParametresPaiementService
 from app.services.qr_code import QRCodeStorageService
 
 
@@ -331,6 +333,36 @@ class PaiementOrchestratorService:
         if not adhesion:
             raise HTTPException(status_code=404, detail="Adhérent introuvable")
         liste_mois = self.cotisations.calculer_mois_consecutifs(c.annee, c.mois, periode)
+        params_svc = ParametresPaiementService(self.session)
+        premiere_an = int(getattr(adhesion, "premiere_annee_cotisation", None) or 0) or 0
+        premiere_mo = int(getattr(adhesion, "premier_mois_cotisation", None) or 0) or 0
+        try:
+            regle_texte = await params_svc.get_regle_premiere_cotisation()
+            if "jour_paiement_offert" in (regle_texte or "").lower():
+                regle_offert = "premier_mois_offert"
+            elif "premier" in (regle_texte or "").lower() and ("mois" in (regle_texte or "").lower() or "offert" in (regle_texte or "").lower()):
+                regle_offert = "premier_mois_offert"
+            else:
+                regle_offert = "pas_de_mois_offert"
+        except Exception:
+            regle_offert = "pas_de_mois_offert"
+        montant_ref_mois: int = 0
+        try:
+            montant_ref_mois = int(await params_svc.get_montant(ParametrePaiementCode.cotisation_mensuelle, date.today()))
+        except Exception:
+            montant_ref_mois = 0
+        if montant_ref_mois <= 0:
+            montant_ref_mois = int(self.settings.default_cotisation_mensuelle_fcfa or 5)
+        for idx, (an, mo) in enumerate(liste_mois):
+            existant = await self.cotisations.get_for_adherent_mois(c.adhesion_id, an, mo)
+            if existant is None:
+                await self.cotisations.get_or_create_for_adherent_mois(
+                    c.adhesion_id,
+                    an,
+                    mo,
+                    montant_defaut=montant_ref_mois,
+                    devise="XOF",
+                )
         if periode == 1 and c.statut == CotisationStatut.payee and not force:
             raise HTTPException(status_code=409, detail="Cotisation déjà payée")
         if periode > 1 and not force:
@@ -343,11 +375,30 @@ class PaiementOrchestratorService:
                 for x in all_suivants if x is not None
             ):
                 raise HTTPException(status_code=409, detail="Toutes les cotisations de la période sont déjà payées")
-        montant_mensuel = int(c.montant or 0) or int(getattr(c, "montant", None) or 0)
-        if montant_mensuel <= 0:
-            montant_mensuel = int(self.settings.default_cotisation_mensuelle_fcfa or 5)
-            c.montant = montant_mensuel
-        montant_total = montant_mensuel * periode
+        montant_total: int = 0
+        premier_mois_offert = bool(regle_offert == "premier_mois_offert" and premiere_an and premiere_mo)
+        for idx, (an, mo) in enumerate(liste_mois):
+            ligne = await self.cotisations.get_for_adherent_mois(c.adhesion_id, an, mo)
+            if ligne is None:
+                continue
+            statut_val = ligne.statut.value if hasattr(ligne.statut, "value") else str(ligne.statut)
+            if statut_val == "payee":
+                continue
+            est_offert = False
+            if premier_mois_offert and idx == 0 and int(an) == premiere_an and int(mo) == premiere_mo:
+                est_offert = True
+            if est_offert:
+                continue
+            m_ligne = int(getattr(ligne, "montant", None) or 0)
+            if m_ligne <= 0:
+                m_ligne = montant_ref_mois
+                try:
+                    ligne.montant = m_ligne
+                except Exception:
+                    pass
+            montant_total += int(m_ligne)
+        if montant_total <= 0:
+            montant_total = int(montant_ref_mois) * int(max(1, periode))
         suffixe_cmd = f"P{periode}" if periode > 1 else ""
         command_ref = f"COT{suffixe_cmd}-{str(c.id)}" if suffixe_cmd else f"COT-{str(c.id)}"
         if periode > 1:
