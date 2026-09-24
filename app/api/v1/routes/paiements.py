@@ -353,7 +353,13 @@ async def etat_cotisation_publique(
             if not _statut_egal_payee(cotisation_courante):
                 montant_du = cc_montant or 0
     def _valeur_statut(s: Any) -> Any:
-        return s.value if hasattr(s, "value") else s
+        v = s.value if hasattr(s, "value") else s
+        if isinstance(v, str):
+            v_stripped = v.strip()
+            if v_stripped == "en_attent":
+                return "en_attente"
+            return v_stripped
+        return v
     cotisation_courante_out = None
     if cotisation_courante is not None:
         cotisation_courante_out = {
@@ -992,7 +998,13 @@ async def ma_cotisation_mois(
         elif cc is not None and not _statut_egal_payee(cc):
             montant_du = getattr(cc, "montant", 0) or 0
     def _valeur_statut(s: Any) -> Any:
-        return s.value if hasattr(s, "value") else s
+        v = s.value if hasattr(s, "value") else s
+        if isinstance(v, str):
+            v_stripped = v.strip()
+            if v_stripped == "en_attent":
+                return "en_attente"
+            return v_stripped
+        return v
     cc_out = None
     if cc is not None:
         cc_out = {
@@ -1113,7 +1125,7 @@ async def _build_suggestion_periode(
                 and int(a) == int(premiere_cotisation_an)
                 and int(m) == int(premiere_cotisation_mo)
             )
-            st = CotisationStatut.payee if paye else (CotisationStatut.impaye if not est_offert else CotisationStatut.payee)
+            st = CotisationStatut.payee if paye else (CotisationStatut.en_attente if not est_offert else CotisationStatut.payee)
             items_details.append(MoisCotisationLabelOut(
                 annee=int(a),
                 mois=int(m),

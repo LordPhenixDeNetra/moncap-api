@@ -36,6 +36,21 @@ class CotisationStatut(StrEnum):
     echue = "echue"
     annulee = "annulee"
 
+    @classmethod
+    def _missing_(cls, value: object) -> "CotisationStatut | None":
+        if value is None:
+            return cls.en_attente
+        s = str(value).strip().lower() if isinstance(value, str) else str(value)
+        if s in {"en_attent", "impaye", "en_retard", "partielle", "en_cours"}:
+            return cls.en_attente
+        if s in {"paye", "paid"}:
+            return cls.payee
+        if s in {"echu", "perime", "expire"}:
+            return cls.echue
+        if s in {"annule", "canceled"}:
+            return cls.annulee
+        return cls.en_attente
+
 
 class TypeTransactionKopar(StrEnum):
     adhesion = "adhesion"
