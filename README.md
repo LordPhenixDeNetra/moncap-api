@@ -110,6 +110,7 @@ poetry run pip install httpx "qrcode[pil]" pillow
 
 <!-- python -m poetry run uvicorn main:app --reload --host 127.0.0.1 --port 8000 -->
 
+<!-- poetry run alembic upgrade head -->
 
 <!-- 
 
