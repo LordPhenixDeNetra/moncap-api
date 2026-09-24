@@ -32,6 +32,19 @@ class Article(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
     validation_motif: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejected_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    rejected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    rejected_motif: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     view_count: Mapped[int] = mapped_column(BigInteger, default=0)
     likes_count: Mapped[int] = mapped_column(BigInteger, default=0)
     comments_count: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -44,6 +57,8 @@ class Article(Base):
 
     author: Mapped["User"] = relationship("User", foreign_keys=[author_id])  # type: ignore[assignment]
     validated_by: Mapped["User | None"] = relationship("User", foreign_keys=[validated_by_user_id])  # type: ignore[assignment]
+    rejected_by: Mapped["User | None"] = relationship("User", foreign_keys=[rejected_by_user_id])  # type: ignore[assignment]
+    closed_by: Mapped["User | None"] = relationship("User", foreign_keys=[closed_by_user_id])  # type: ignore[assignment]
     attachments: Mapped[list["ArticleAttachment"]] = relationship(
         back_populates="article", cascade="all, delete-orphan", order_by="ArticleAttachment.order"
     )

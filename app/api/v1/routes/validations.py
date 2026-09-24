@@ -13,6 +13,7 @@ from app.models.enums import AdhesionStatus, AppRole
 from app.models.user import User
 from app.repositories.adhesions import AdhesionRepository
 from app.schemas.admin import (
+    AdminAdhesionItem,
     AdminAdhesionListResponse,
     AdminUpdateAdhesionRequest,
     AdminUpdateAdhesionResponse,
@@ -25,6 +26,7 @@ from app.services.adhesion_mail_templates import (
 from app.services.adhesions import AdhesionService
 from app.services.mail import send_email_best_effort
 from app.services.members import MemberAccountService
+from app.schemas.users_out import enrich_adhesion_acteurs_embedded
 
 accueil_router = APIRouter(
     prefix="/accueil",
@@ -77,20 +79,10 @@ async def list_adhesions_accueil(
         from_date=from_date,
         to_date=to_date,
     )
+    await enrich_adhesion_acteurs_embedded(db, items)
+    data_out = [AdminAdhesionItem.model_validate(x) for x in items]
     return {
-        "data": [
-            {
-                "id": x.id,
-                "nom": x.nom,
-                "prenom": x.prenom,
-                "email": x.email,
-                "cni": x.cni,
-                "commissariat": x.commissariat,
-                "statut": x.statut,
-                "createdAt": x.created_at,
-            }
-            for x in items
-        ],
+        "data": data_out,
         "meta": {"total": total, "limit": limit, "offset": offset},
     }
 
@@ -111,6 +103,8 @@ async def lookup_adhesion_accueil(
     adhesion = await AdhesionService(db).lookup_details(
         adhesion_id=id, email=email, cni=cni, tel_mobile=tel_mobile
     )
+    if adhesion is not None:
+        await enrich_adhesion_acteurs_embedded(db, [adhesion])
     return {"data": adhesion}
 
 
@@ -146,20 +140,10 @@ async def list_adhesions_directoire(
         from_date=from_date,
         to_date=to_date,
     )
+    await enrich_adhesion_acteurs_embedded(db, items)
+    data_out = [AdminAdhesionItem.model_validate(x) for x in items]
     return {
-        "data": [
-            {
-                "id": x.id,
-                "nom": x.nom,
-                "prenom": x.prenom,
-                "email": x.email,
-                "cni": x.cni,
-                "commissariat": x.commissariat,
-                "statut": x.statut,
-                "createdAt": x.created_at,
-            }
-            for x in items
-        ],
+        "data": data_out,
         "meta": {"total": total, "limit": limit, "offset": offset},
     }
 
@@ -180,6 +164,8 @@ async def lookup_adhesion_directoire(
     adhesion = await AdhesionService(db).lookup_details(
         adhesion_id=id, email=email, cni=cni, tel_mobile=tel_mobile
     )
+    if adhesion is not None:
+        await enrich_adhesion_acteurs_embedded(db, [adhesion])
     return {"data": adhesion}
 
 
@@ -291,6 +277,7 @@ async def rejeter_adhesion(
     payload: AdminUpdateAdhesionRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     if not (payload.motif_rejet and payload.motif_rejet.strip()):
         raise HTTPException(status_code=400, detail="Motif requis si rejet")
@@ -303,7 +290,10 @@ async def rejeter_adhesion(
         raise HTTPException(status_code=400, detail=f"L'adhésion n'est pas en attente de validation (statut actuel: {before.statut})")
 
     rowcount = await AdhesionRepository(db).update_status(
-        adhesion_id=adhesion_id, statut=AdhesionStatus.rejetee, motif_rejet=payload.motif_rejet
+        adhesion_id=adhesion_id,
+        statut=AdhesionStatus.rejetee,
+        motif_rejet=payload.motif_rejet,
+        acteur_user_id=principal.user_id,
     )
     if rowcount == 0:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")

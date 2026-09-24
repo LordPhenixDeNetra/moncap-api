@@ -11,6 +11,8 @@ from app.models.paiements import (
     StatutTransactionKopar,
     TypeTransactionKopar,
 )
+from app.schemas.users_out import UserOut
+
 
 class ParametrePaiementOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -64,6 +66,8 @@ class CotisationMensuelleOut(BaseModel):
     mode_paiement: str | None = Field(default=None, alias="modePaiement")
     reference_paiement: str | None = Field(default=None, alias="referencePaiement")
     paiement_manuel: bool = Field(default=False, alias="paiementManuel")
+    paiement_manuel_par_user_id: uuid.UUID | None = Field(default=None, alias="paiementManuelParUserId")
+    paiement_manuel_par_user: UserOut | None = Field(default=None, alias="paiementManuelParUser")
     paiement_manuel_note: str | None = Field(default=None, alias="paiementManuelNote")
     relance_envoyee_1: bool = Field(default=False, alias="relanceEnvoyee1")
     relance_envoyee_2: bool = Field(default=False, alias="relanceEnvoyee2")

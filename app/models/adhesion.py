@@ -103,6 +103,22 @@ class Adhesion(Base):
         "User", foreign_keys=[validation_directoire_user_id]
     )
 
+    rejete_par_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    rejete_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    rejete_par_user = relationship("User", foreign_keys=[rejete_par_user_id])
+
+    en_complement_par_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    en_complement_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    en_complement_par_user = relationship("User", foreign_keys=[en_complement_par_user_id])
+
     radie_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     radie_par_user_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True

@@ -351,12 +351,27 @@ class AdhesionRepository:
         adhesion_id: uuid.UUID,
         statut: AdhesionStatus,
         motif_rejet: str | None,
+        acteur_user_id: uuid.UUID | None = None,
     ) -> int:
+        """Mise à jour statut + audit trail rejet/demande complément si acteur fourni."""
+        from sqlalchemy import func
+
+        values: dict[str, Any] = {
+            "statut": statut,
+            "motif_rejet": motif_rejet,
+            "updated_at": func.now(),
+        }
+        if statut == AdhesionStatus.rejetee and acteur_user_id is not None:
+            values["rejete_par_user_id"] = acteur_user_id
+            values["rejete_at"] = func.now()
+        if statut == AdhesionStatus.complement and acteur_user_id is not None:
+            values["en_complement_par_user_id"] = acteur_user_id
+            values["en_complement_at"] = func.now()
         res = await self.session.execute(
             update(Adhesion)
             .where(Adhesion.id == adhesion_id)
             .where(Adhesion.deleted_at.is_(None))
-            .values(statut=statut, motif_rejet=motif_rejet, updated_at=func.now())
+            .values(**values)
         )
         return res.rowcount or 0
 

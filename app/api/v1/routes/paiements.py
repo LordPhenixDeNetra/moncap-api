@@ -54,6 +54,7 @@ from app.services.kopar import KoparError
 from app.services.paiement_orchestrator import PaiementOrchestratorService
 from app.services.paiements import CotisationsService, ParametresPaiementService
 from app.services.qr_code import QRCodeStorageService
+from app.schemas.users_out import enrich_cotisations_manuel_embedded
 
 
 public_router = APIRouter(prefix="/paiements", tags=["paiements"])
@@ -884,6 +885,7 @@ async def mes_cotisations(
         return {"data": [], "total": 0}
     service = CotisationsService(db)
     items = await service.historique_adherent(user.adhesion_id, limit)
+    await enrich_cotisations_manuel_embedded(db, items)
     return {"data": items, "total": len(items)}
 
 
@@ -1337,6 +1339,7 @@ async def admin_list_cotisations(
             "modePaiement": c.mode_paiement,
             "referencePaiement": c.reference_paiement,
             "paiementManuel": c.paiement_manuel,
+            "paiementManuelParUserId": c.paiement_manuel_par_user_id,
             "paiementManuelNote": c.paiement_manuel_note,
             "relanceEnvoyee1": c.relance_envoyee_1,
             "relanceEnvoyee2": c.relance_envoyee_2,
@@ -1348,6 +1351,18 @@ async def admin_list_cotisations(
             "adhesionTelMobile": adh.tel_mobile if adh else None,
             "adhesionCommissariat": adh.commissariat if adh else None,
         })
+    await enrich_cotisations_manuel_embedded(db, items)
+    user_out_map: dict[uuid.UUID, Any] = {}
+    for c in items:
+        u = getattr(c, "paiement_manuel_par_user", None)
+        if u is not None and getattr(c, "paiement_manuel_par_user_id", None):
+            user_out_map[uuid.UUID(str(c.paiement_manuel_par_user_id))] = u
+    for di in detail_items:
+        uid = di.get("paiementManuelParUserId")
+        if uid and uid in user_out_map:
+            di["paiementManuelParUser"] = user_out_map[uid]
+        else:
+            di["paiementManuelParUser"] = None
     return {"data": detail_items, "total": total, "payes": payes, "impayes": impayes}
 
 

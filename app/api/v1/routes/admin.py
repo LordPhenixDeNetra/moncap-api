@@ -15,6 +15,7 @@ from app.db.session import get_db
 from app.models.enums import AdhesionStatus, DisabledReason
 from app.repositories.adhesions import AdhesionRepository
 from app.schemas.admin import (
+    AdminAdhesionItem,
     AdminAdhesionListResponse,
     AdminConfirmPaymentRequest,
     AdminUpdateAdhesionRequest,
@@ -40,6 +41,7 @@ from app.services.radiation_mail_templates import (
     resolve_recipient_email,
 )
 from app.services.radiation_service import RadiationService
+from app.schemas.users_out import enrich_adhesion_acteurs_embedded
 
 _ALL_STAFF_ROLES = ("admin", "comite_accueil", "comite_directoire")
 
@@ -83,20 +85,13 @@ async def list_adhesions(
         from_date=from_date,
         to_date=to_date,
     )
+    await enrich_adhesion_acteurs_embedded(db, items)
+    data_out = [
+        AdminAdhesionItem.model_validate(x)
+        for x in items
+    ]
     return {
-        "data": [
-            {
-                "id": x.id,
-                "nom": x.nom,
-                "prenom": x.prenom,
-                "email": x.email,
-                "cni": x.cni,
-                "commissariat": x.commissariat,
-                "statut": x.statut,
-                "createdAt": x.created_at,
-            }
-            for x in items
-        ],
+        "data": data_out,
         "meta": {"total": total, "limit": limit, "offset": offset},
     }
 
@@ -112,17 +107,22 @@ async def update_adhesion(
     payload: AdminUpdateAdhesionRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     if payload.statut not in [AdhesionStatus.rejetee, AdhesionStatus.complement]:
         raise HTTPException(status_code=400, detail="Cette action n'est pas autorisée pour ce statut")
 
     if payload.statut == AdhesionStatus.rejetee and not (payload.motif_rejet and payload.motif_rejet.strip()):
         raise HTTPException(status_code=400, detail="Motif requis si rejet")
+
     before = await AdhesionRepository(db).get_by_id(adhesion_id)
     if not before:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
     rowcount = await AdhesionRepository(db).update_status(
-        adhesion_id=adhesion_id, statut=payload.statut, motif_rejet=payload.motif_rejet
+        adhesion_id=adhesion_id,
+        statut=payload.statut,
+        motif_rejet=payload.motif_rejet,
+        acteur_user_id=principal.user_id,
     )
     if rowcount == 0:
         raise HTTPException(status_code=404, detail="Adhésion introuvable")
@@ -159,6 +159,8 @@ async def lookup_adhesion(
     adhesion = await AdhesionService(db).lookup_details(
         adhesion_id=id, email=email, cni=cni, tel_mobile=tel_mobile
     )
+    if adhesion is not None:
+        await enrich_adhesion_acteurs_embedded(db, [adhesion])
     return {"data": adhesion}
 
 @write_router.patch(

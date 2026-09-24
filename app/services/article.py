@@ -601,9 +601,12 @@ class ArticleService:
         now = datetime.utcnow()
         values: dict[str, Any] = {
             "status": ArticleStatus.rejected.value,
-            "validated_by_user_id": validator_user_id,
-            "validated_at": now,
-            "validation_motif": motif.strip(),
+            "rejected_by_user_id": validator_user_id,
+            "rejected_at": now,
+            "rejected_motif": motif.strip(),
+            "validated_by_user_id": article.validated_by_user_id,
+            "validated_at": article.validated_at,
+            "validation_motif": article.validation_motif,
         }
         await self.articles.update_fields(article_id=article.id, values=values)
         await self.session.commit()

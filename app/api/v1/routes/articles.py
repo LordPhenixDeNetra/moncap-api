@@ -38,6 +38,7 @@ from app.services.article_mail_templates import (
     resolve_author_email,
 )
 from app.services.mail import send_email_best_effort
+from app.schemas.users_out import enrich_articles_acteurs_embedded
 
 _VALID_ARTICLE_STATUSES = {e.value for e in ArticleStatus}
 _MODERATION_ROLES = (AppRole.admin.value, AppRole.moderateur.value)
@@ -124,6 +125,7 @@ async def list_articles_public(
         published_to=published_to,
         sort=sort,
     )
+    await enrich_articles_acteurs_embedded(db, items)
     return ArticleListResponse(
         total=total,
         page=page,
@@ -138,6 +140,8 @@ async def get_article_public(
     db: AsyncSession = Depends(get_db),
 ):
     a = await ArticleService(db).get_public_detail(article_id)
+    if a is not None:
+        await enrich_articles_acteurs_embedded(db, [a])
     return ArticleOut.model_validate(a)
 
 
@@ -242,6 +246,7 @@ async def list_my_articles(
         status=status_filter,
         include_deleted=include_deleted,
     )
+    await enrich_articles_acteurs_embedded(db, items)
     return ArticleListResponse(
         total=total,
         page=page,
@@ -265,6 +270,8 @@ async def get_article_owner(
         principal_id=principal.user_id,
         is_admin=_is_staff_articles(principal),
     )
+    if a is not None:
+        await enrich_articles_acteurs_embedded(db, [a])
     return ArticleOut.model_validate(a)
 
 
@@ -563,6 +570,7 @@ async def list_articles_moderation(
         page_size=page_size,
         status=statuses or None,
     )
+    await enrich_articles_acteurs_embedded(db, items)
     return ArticleListResponse(
         total=total,
         page=page,

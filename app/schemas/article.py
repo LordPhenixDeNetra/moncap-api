@@ -37,6 +37,11 @@ class ArticleAuthorOut(BaseModel):
     id: uuid.UUID
     nom: str
     prenom: str
+    profile_photo_url: str | None = None
+
+    @field_serializer("profile_photo_url")
+    def _abs_profile_photo(self, v: str | None) -> str | None:
+        return to_absolute_public_url(v)
 
 
 class ArticleOut(BaseModel):
@@ -53,8 +58,15 @@ class ArticleOut(BaseModel):
     author_id: uuid.UUID
     author: ArticleAuthorOut | None = None
     validated_by_user_id: uuid.UUID | None = None
+    validated_by_user: ArticleAuthorOut | None = None
     validated_at: datetime | None = None
     validation_motif: str | None = None
+    rejected_by_user_id: uuid.UUID | None = None
+    rejected_by_user: ArticleAuthorOut | None = None
+    rejected_at: datetime | None = None
+    rejected_motif: str | None = None
+    closed_by_user: ArticleAuthorOut | None = None
+    closed_at: datetime | None = None
     view_count: int
     likes_count: int
     comments_count: int

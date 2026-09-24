@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from app.core.urls import to_absolute_public_url
 from app.models.enums import AdhesionStatus, DisabledReason, EngagementType, PaymentMode
 from app.schemas.geo import CommuneOut, DepartementOut, PaysOut, RegionOut
+from app.schemas.users_out import UserOut
 
 
 class AdhesionCreatedData(BaseModel):
@@ -97,6 +98,16 @@ class AdhesionDetailOut(BaseModel):
     certification: bool
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
+
+    valide_niveau1_par_user: UserOut | None = Field(default=None, alias="valideNiveau1ParUser")
+    valide_niveau1_at: datetime | None = Field(default=None, alias="valideNiveau1At")
+    valide_niveau2_par_user: UserOut | None = Field(default=None, alias="valideNiveau2ParUser")
+    valide_niveau2_at: datetime | None = Field(default=None, alias="valideNiveau2At")
+    rejete_par_user: UserOut | None = Field(default=None, alias="rejeteParUser")
+    rejete_at: datetime | None = Field(default=None, alias="rejeteAt")
+    en_complement_par_user: UserOut | None = Field(default=None, alias="enComplementParUser")
+    en_complement_at: datetime | None = Field(default=None, alias="enComplementAt")
+    radie_par_user: UserOut | None = Field(default=None, alias="radieParUser")
 
     @field_serializer("cv_url", "photo_recto_url", "photo_verso_url", "profile_photo_url")
     def _abs_file_urls(self, v: str | None) -> str | None:

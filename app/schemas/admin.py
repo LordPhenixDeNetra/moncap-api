@@ -4,9 +4,10 @@ import uuid
 from datetime import date
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import AdhesionStatus, EngagementType, PaymentMode
+from app.schemas.users_out import UserOut
 
 
 class PaginationMeta(BaseModel):
@@ -16,6 +17,8 @@ class PaginationMeta(BaseModel):
 
 
 class AdminAdhesionItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
     id: uuid.UUID
     nom: str
     prenom: str
@@ -24,6 +27,18 @@ class AdminAdhesionItem(BaseModel):
     commissariat: str
     statut: AdhesionStatus
     created_at: datetime = Field(alias="createdAt")
+
+    valide_niveau1_par_user: UserOut | None = Field(default=None, alias="valideNiveau1ParUser")
+    valide_niveau1_at: datetime | None = Field(default=None, alias="valideNiveau1At")
+    valide_niveau2_par_user: UserOut | None = Field(default=None, alias="valideNiveau2ParUser")
+    valide_niveau2_at: datetime | None = Field(default=None, alias="valideNiveau2At")
+    rejete_par_user: UserOut | None = Field(default=None, alias="rejeteParUser")
+    rejete_at: datetime | None = Field(default=None, alias="rejeteAt")
+    en_complement_par_user: UserOut | None = Field(default=None, alias="enComplementParUser")
+    en_complement_at: datetime | None = Field(default=None, alias="enComplementAt")
+    radie_par_user: UserOut | None = Field(default=None, alias="radieParUser")
+    radie_at: datetime | None = Field(default=None, alias="radieAt")
+    motif_rejet: str | None = Field(default=None, alias="motifRejet")
 
 
 class AdminAdhesionListResponse(BaseModel):
