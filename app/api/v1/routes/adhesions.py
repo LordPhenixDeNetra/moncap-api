@@ -93,7 +93,7 @@ async def verifier_carte_pastef(
     "",
     response_model=AdhesionCreatedResponse,
     summary="Créer une nouvelle adhésion",
-    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite le CV ; le dernier diplôme ou attestation de réussite (diplome) est recommandé. photo_recto/photo_verso sont dépréciés et optionnels via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
+    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite le CV et le dernier diplôme ou attestation de réussite (diplome). photo_recto/photo_verso sont dépréciés et optionnels via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
 )
 async def create_adhesion(
     background_tasks: BackgroundTasks,
@@ -136,7 +136,7 @@ async def create_adhesion(
     photo: UploadFile | None = File(None),
     profile_photo: UploadFile | None = File(None),
     cv: UploadFile = File(...),
-    diplome: UploadFile | None = File(None),
+    diplome: UploadFile = File(...),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
 ):
