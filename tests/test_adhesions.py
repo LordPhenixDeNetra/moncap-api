@@ -94,6 +94,24 @@ async def test_post_adhesion_legacy_photo_alias(client, db_session):
     assert r.status_code == 200
 
 
+async def test_post_adhesion_diplome_sans_recto_verso(client, db_session):
+    r1, _, d1, c1 = await _seed_geo(db_session)
+
+    r = await client.post(
+        "/api/v1/adhesions",
+        data=_payload(region_id=r1.id, departement_id=d1.id, commune_id=c1.id),
+        files=[
+            ("cv", ("cv.pdf", b"fake-cv", "application/pdf")),
+            ("diplome", ("diplome.pdf", b"fake-diplome", "application/pdf")),
+        ],
+    )
+    assert r.status_code == 200
+
+    a = (await db_session.execute(select(Adhesion))).scalar_one()
+    assert a.diplome_url and "diplomes/" in a.diplome_url
+    assert a.photo_recto_url is None and a.photo_verso_url is None
+
+
 async def test_post_adhesion_geo_coherence(client, db_session):
     r1, r2, d1, c1 = await _seed_geo(db_session)
 

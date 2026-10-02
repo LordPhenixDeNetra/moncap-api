@@ -76,6 +76,8 @@ class Adhesion(Base):
     profile_photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     photo_recto_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     photo_verso_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Dernier diplôme ou attestation de réussite (remplace photo_recto/photo_verso pour les nouvelles demandes)
+    diplome_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     statut: Mapped[AdhesionStatus] = mapped_column(
         SAEnum(AdhesionStatus, name="adhesion_status", native_enum=False, validate_strings=True),
         server_default=AdhesionStatus.en_attente.value,

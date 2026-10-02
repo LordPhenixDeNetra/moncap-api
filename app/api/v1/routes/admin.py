@@ -182,7 +182,7 @@ async def update_adhesion_info(
     "/adhesions/{adhesion_id}/files",
     response_model=AdhesionDetailResponse,
     summary="Remplacer des fichiers d'une adhésion",
-    description="Permet à l’admin de remplacer profile_photo, photo_recto, photo_verso et/ou cv.",
+    description="Permet à l’admin de remplacer profile_photo, photo_recto, photo_verso, diplome et/ou cv.",
 )
 async def update_adhesion_files(
     adhesion_id: uuid.UUID,
@@ -190,6 +190,7 @@ async def update_adhesion_files(
     photo_recto: UploadFile | None = File(None),
     photo_verso: UploadFile | None = File(None),
     cv: UploadFile | None = File(None),
+    diplome: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
 ):
     updated = await AdhesionService(db).admin_update_files(
@@ -198,6 +199,7 @@ async def update_adhesion_files(
         photo_recto=photo_recto,
         photo_verso=photo_verso,
         cv=cv,
+        diplome=diplome,
     )
     return {"data": updated}
 

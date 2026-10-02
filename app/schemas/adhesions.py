@@ -88,6 +88,7 @@ class AdhesionDetailOut(BaseModel):
     cv_url: str | None
     photo_recto_url: str | None
     photo_verso_url: str | None
+    diplome_url: str | None = None
     profile_photo_url: str | None = None
     statut: AdhesionStatus
     motif_rejet: str | None = Field(default=None, alias="motifRejet")
@@ -109,7 +110,7 @@ class AdhesionDetailOut(BaseModel):
     en_complement_at: datetime | None = Field(default=None, alias="enComplementAt")
     radie_par_user: UserOut | None = Field(default=None, alias="radieParUser")
 
-    @field_serializer("cv_url", "photo_recto_url", "photo_verso_url", "profile_photo_url")
+    @field_serializer("cv_url", "photo_recto_url", "photo_verso_url", "diplome_url", "profile_photo_url")
     def _abs_file_urls(self, v: str | None) -> str | None:
         return to_absolute_public_url(v)
 

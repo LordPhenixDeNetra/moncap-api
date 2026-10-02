@@ -93,7 +93,7 @@ async def verifier_carte_pastef(
     "",
     response_model=AdhesionCreatedResponse,
     summary="Créer une nouvelle adhésion",
-    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite l'envoi de fichiers (photo_recto, photo_verso et CV) via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
+    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite le CV ; le dernier diplôme ou attestation de réussite (diplome) est recommandé. photo_recto/photo_verso sont dépréciés et optionnels via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
 )
 async def create_adhesion(
     background_tasks: BackgroundTasks,
@@ -132,17 +132,14 @@ async def create_adhesion(
     reference_paiement: str | None = Form(None),
     certification: bool = Form(...),
     photo_recto: UploadFile | None = File(None),
-    photo_verso: UploadFile = File(...),
+    photo_verso: UploadFile | None = File(None),
     photo: UploadFile | None = File(None),
     profile_photo: UploadFile | None = File(None),
     cv: UploadFile = File(...),
+    diplome: UploadFile | None = File(None),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
 ):
-    photo_recto_final = photo_recto or photo
-    if not photo_recto_final:
-        raise HTTPException(status_code=422, detail="photo_recto (ou photo) est requis")
-
     if montant_adhesion is None or montant_adhesion <= 0:
         montant_adhesion = await ParametresPaiementService(db).get_montant(
             ParametrePaiementCode.adhesion_initiale,
@@ -187,10 +184,11 @@ async def create_adhesion(
     )
     adhesion = await AdhesionService(db).create(
         data=data,
-        photo_recto=photo_recto_final,
+        photo_recto=photo_recto or photo,
         photo_verso=photo_verso,
         profile_photo=profile_photo,
         cv=cv,
+        diplome=diplome,
         idempotency_key=idempotency_key,
     )
     settings = get_settings()

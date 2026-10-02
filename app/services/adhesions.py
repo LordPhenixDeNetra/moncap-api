@@ -110,17 +110,17 @@ class AdhesionService:
     def _idempotency_hash(
         self,
         data: dict,
-        photo_recto: UploadFile,
-        photo_verso: UploadFile,
+        photo_recto: UploadFile | None,
+        photo_verso: UploadFile | None,
         cv: UploadFile,
         profile_photo: UploadFile | None,
+        diplome: UploadFile | None,
     ) -> str:
         payload = dict(data)
-        payload["photo_recto_filename"] = photo_recto.filename
-        payload["photo_verso_filename"] = photo_verso.filename
         payload["cv_filename"] = cv.filename
-        if profile_photo is not None:
-            payload["profile_photo_filename"] = profile_photo.filename
+        for key, f in (("photo_recto", photo_recto), ("photo_verso", photo_verso), ("profile_photo", profile_photo), ("diplome", diplome)):
+            if f is not None:
+                payload[f"{key}_filename"] = f.filename
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
@@ -128,11 +128,12 @@ class AdhesionService:
         self,
         *,
         data: CreateAdhesionInput,
-        photo_recto: UploadFile,
-        photo_verso: UploadFile,
+        photo_recto: UploadFile | None,
+        photo_verso: UploadFile | None,
         profile_photo: UploadFile | None,
         cv: UploadFile,
         idempotency_key: str | None,
+        diplome: UploadFile | None = None,
     ) -> Adhesion:
         if not data.certification:
             raise HTTPException(status_code=400, detail="Certification requise")
@@ -167,7 +168,7 @@ class AdhesionService:
         idem_hash = None
         existing = None
         if idempotency_key:
-            idem_hash = self._idempotency_hash(payload_dict, photo_recto, photo_verso, cv, profile_photo)
+            idem_hash = self._idempotency_hash(payload_dict, photo_recto, photo_verso, cv, profile_photo, diplome)
             existing = await self.adhesions.get_by_idempotency_key(idempotency_key)
             if existing:
                 if existing.idempotency_hash and existing.idempotency_hash != idem_hash:
@@ -211,8 +212,9 @@ class AdhesionService:
                     },
                 )
 
-        photo_recto_url = await self.storage.save(file=photo_recto, subdir="photos")
-        photo_verso_url = await self.storage.save(file=photo_verso, subdir="photos")
+        photo_recto_url = await self.storage.save(file=photo_recto, subdir="photos") if photo_recto is not None else None
+        photo_verso_url = await self.storage.save(file=photo_verso, subdir="photos") if photo_verso is not None else None
+        diplome_url = await self.storage.save(file=diplome, subdir="diplomes") if diplome is not None else None
         cv_url = await self.storage.save(file=cv, subdir="cvs")
         profile_photo_url = (
             await self.storage.save(file=profile_photo, subdir="profile_photos") if profile_photo is not None else None
@@ -257,6 +259,7 @@ class AdhesionService:
             profile_photo_url=profile_photo_url,
             photo_recto_url=photo_recto_url,
             photo_verso_url=photo_verso_url,
+            diplome_url=diplome_url,
             cv_url=cv_url,
             idempotency_key=idempotency_key,
             idempotency_hash=idem_hash,
@@ -409,6 +412,7 @@ class AdhesionService:
         photo_recto: UploadFile | None,
         photo_verso: UploadFile | None,
         cv: UploadFile | None,
+        diplome: UploadFile | None = None,
     ) -> Adhesion:
         adhesion = await self.adhesions.get_by_id(adhesion_id)
         if not adhesion:
@@ -425,6 +429,8 @@ class AdhesionService:
             values["photo_verso_url"] = await self.storage.save(file=photo_verso, subdir="photos")
         if cv is not None:
             values["cv_url"] = await self.storage.save(file=cv, subdir="cvs")
+        if diplome is not None:
+            values["diplome_url"] = await self.storage.save(file=diplome, subdir="diplomes")
 
         if not values:
             return adhesion
