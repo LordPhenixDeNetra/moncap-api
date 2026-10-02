@@ -88,9 +88,10 @@ async def send_email_otp(session: AsyncSession, email: str) -> None:
     await session.commit()
 
 
-async def verify_email_otp(session: AsyncSession, email: str, code: str) -> None:
-    """Vérifie le code. En cas de succès, la ligne est supprimée mais NON commitée :
-    la suppression part avec le commit de l'adhésion (le code reste valable si la création échoue)."""
+async def verify_email_otp(session: AsyncSession, email: str, code: str, *, consume: bool = True) -> None:
+    """Vérifie le code. consume=False : simple vérification, le code reste utilisable.
+    consume=True : la ligne est supprimée mais NON commitée, la suppression part avec le
+    commit de l'adhésion (le code reste valable si la création échoue)."""
     row = await session.get(EmailOtp, email)
     if row is None:
         raise _error(400, "OTP_NOT_FOUND", "Aucun code demandé pour cet email")
@@ -102,4 +103,5 @@ async def verify_email_otp(session: AsyncSession, email: str, code: str) -> None
         row.attempts += 1
         await session.commit()
         raise _error(400, "OTP_INVALID", "Code de vérification incorrect")
-    await session.delete(row)
+    if consume:
+        await session.delete(row)

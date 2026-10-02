@@ -191,8 +191,15 @@ async def test_email_otp_flow(client, db_session, monkeypatch):
     r = await client.post("/api/v1/adhesions/email-otp", json={"email": "john@example.com"})
     assert r.status_code == 429
 
+    wrong = "000000" if code != "000000" else "111111"
+    r = await client.post("/api/v1/adhesions/verify-email-otp", json={"email": "john@example.com", "otp": wrong})
+    assert r.status_code == 400 and "OTP_INVALID" in r.text
+    for _ in range(2):  # vérifiable plusieurs fois sans être consommé
+        r = await client.post("/api/v1/adhesions/verify-email-otp", json={"email": "john@example.com", "otp": code})
+        assert r.status_code == 200 and r.json() == {"data": {"valid": True}}
+
     p = _payload(region_id=r1.id, departement_id=d1.id, commune_id=c1.id)
-    p["email_otp"] = "000000" if code != "000000" else "111111"
+    p["email_otp"] = wrong
     r = await client.post("/api/v1/adhesions", data=p, files=_files())
     assert r.status_code == 400 and "OTP_INVALID" in r.text
 

@@ -18,7 +18,7 @@ from app.repositories.adhesions import AdhesionRepository
 from app.schemas.adhesions import AdhesionCreatedResponse, AdhesionPublicListResponse
 from app.services.adhesions import AdhesionService, CreateAdhesionInput
 from app.services.adhesion_mail_templates import build_adhesion_created
-from app.services.email_otp import send_email_otp
+from app.services.email_otp import send_email_otp, verify_email_otp
 from app.services.mail import send_email_best_effort
 from app.services.paiements import ParametresPaiementService
 
@@ -94,15 +94,25 @@ class EmailOtpRequest(BaseModel):
     email: str
 
 
+class VerifyEmailOtpRequest(BaseModel):
+    email: str
+    otp: str
+
+
+def _valid_email_or_400(raw: str) -> str:
+    email = normalize_email(raw)
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_EMAIL", "field": "email", "message": "Email invalide"})
+    return email
+
+
 @router.post(
     "/email-otp",
     summary="Envoyer un code de vérification à l'email",
     description="Envoie un code à 6 chiffres (valable 10 min) à l'email saisi dans le formulaire d'adhésion. Le code est ensuite envoyé dans le champ email_otp de POST /adhesions.",
 )
 async def request_email_otp(body: EmailOtpRequest, db: AsyncSession = Depends(get_db)):
-    email = normalize_email(body.email)
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail={"code": "INVALID_EMAIL", "field": "email", "message": "Email invalide"})
+    email = _valid_email_or_400(body.email)
     if await AdhesionRepository(db).get_conflict_by_email(email):
         raise HTTPException(
             status_code=409,
@@ -110,6 +120,16 @@ async def request_email_otp(body: EmailOtpRequest, db: AsyncSession = Depends(ge
         )
     await send_email_otp(db, email)
     return {"data": {"sent": True, "expiresInSeconds": 600}}
+
+
+@router.post(
+    "/verify-email-otp",
+    summary="Vérifier le code OTP sans le consommer",
+    description="Vérifie le code reçu par email. Le code reste valable (il n'est consommé que par POST /adhesions). Les échecs comptent dans la limite de 5 essais.",
+)
+async def check_email_otp(body: VerifyEmailOtpRequest, db: AsyncSession = Depends(get_db)):
+    await verify_email_otp(db, _valid_email_or_400(body.email), body.otp, consume=False)
+    return {"data": {"valid": True}}
 
 
 @router.post(
