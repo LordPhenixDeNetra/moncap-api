@@ -1,6 +1,7 @@
 from app.models.adhesion import Adhesion
 from app.models.article import Article, ArticleAttachment, ArticleComment, ArticleLike
 from app.models.auth_session import RefreshTokenSession
+from app.models.email_otp import EmailOtp
 from app.models.geo import Commune, Departement, Region
 from app.models.paiements import (
     CotisationMensuelle,
@@ -23,6 +24,7 @@ __all__ = [
     "CotisationMensuelle",
     "CotisationStatut",
     "Departement",
+    "EmailOtp",
     "ParametrePaiement",
     "ParametrePaiementCode",
     "RefreshTokenSession",

@@ -18,6 +18,7 @@ from app.repositories.adhesions import AdhesionRepository
 from app.schemas.adhesions import AdhesionCreatedResponse, AdhesionPublicListResponse
 from app.services.adhesions import AdhesionService, CreateAdhesionInput
 from app.services.adhesion_mail_templates import build_adhesion_created
+from app.services.email_otp import send_email_otp
 from app.services.mail import send_email_best_effort
 from app.services.paiements import ParametresPaiementService
 
@@ -89,11 +90,33 @@ async def verifier_carte_pastef(
     return pastef_json
 
 
+class EmailOtpRequest(BaseModel):
+    email: str
+
+
+@router.post(
+    "/email-otp",
+    summary="Envoyer un code de vérification à l'email",
+    description="Envoie un code à 6 chiffres (valable 10 min) à l'email saisi dans le formulaire d'adhésion. Le code est ensuite envoyé dans le champ email_otp de POST /adhesions.",
+)
+async def request_email_otp(body: EmailOtpRequest, db: AsyncSession = Depends(get_db)):
+    email = normalize_email(body.email)
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_EMAIL", "field": "email", "message": "Email invalide"})
+    if await AdhesionRepository(db).get_conflict_by_email(email):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DUPLICATE_EMAIL", "field": "email", "message": "Une adhésion existe déjà avec cet email"},
+        )
+    await send_email_otp(db, email)
+    return {"data": {"sent": True, "expiresInSeconds": 600}}
+
+
 @router.post(
     "",
     response_model=AdhesionCreatedResponse,
     summary="Créer une nouvelle adhésion",
-    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite le CV et le dernier diplôme ou attestation de réussite (diplome). photo_recto/photo_verso sont dépréciés et optionnels via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
+    description="Permet à un citoyen de soumettre une demande d'adhésion. Nécessite le CV, le dernier diplôme ou attestation de réussite (diplome) et le code email_otp reçu via POST /adhesions/email-otp. photo_recto/photo_verso sont dépréciés et optionnels via multipart/form-data. Gère l'idempotence via l'en-tête 'Idempotency-Key'.",
 )
 async def create_adhesion(
     background_tasks: BackgroundTasks,
@@ -105,6 +128,7 @@ async def create_adhesion(
     tel_mobile: str = Form(...),
     tel_fixe: str | None = Form(None),
     email: str = Form(...),
+    email_otp: str = Form(...),
     cni: str = Form(...),
     carte_electeur: str | None = Form(None),
     carte_pastef: str | None = Form(None),
@@ -189,6 +213,7 @@ async def create_adhesion(
         profile_photo=profile_photo,
         cv=cv,
         diplome=diplome,
+        email_otp=email_otp,
         idempotency_key=idempotency_key,
     )
     settings = get_settings()

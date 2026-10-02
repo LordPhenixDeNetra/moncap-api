@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
 from app.core.settings import get_settings
 from app.models.adhesion import Adhesion
+from app.models.email_otp import EmailOtp
+from app.services.email_otp import _hash
 from app.models.geo import Commune, Departement, Region
 
 
@@ -17,6 +19,10 @@ async def _seed_geo(db_session):
     d1 = Departement(id=uuid.uuid4(), region_id=r1.id, nom="Dep 1")
     c1 = Commune(id=uuid.uuid4(), departement_id=d1.id, nom="Com 1")
     db_session.add_all([r1, r2, d1, c1])
+    # Code OTP valide pour l'email du payload (cf. _payload["email_otp"])
+    now = datetime.now(timezone.utc)
+    db_session.add(EmailOtp(email="john@example.com", code_hash=_hash("john@example.com", "123456"),
+                            expires_at=now + timedelta(minutes=10), sent_at=now, attempts=0))
     await db_session.commit()
     return r1, r2, d1, c1
 
@@ -48,6 +54,7 @@ def _payload(*, region_id, departement_id, commune_id, region2_id=None):
         "profession": "Dev",
         "tel_mobile": "770000000",
         "email": "john@example.com",
+        "email_otp": "123456",
         "cni": "CNI123",
         "region_domicile_id": str(region_id if region2_id is None else region2_id),
         "departement_domicile_id": str(departement_id),
@@ -158,3 +165,43 @@ async def test_post_adhesion_triggers_email_when_enabled(client, db_session, mon
     assert r.status_code == 200
     assert len(calls) == 1
     assert calls[0]["to"] == "john@example.com"
+
+
+class _FakeMailer:
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    def send(self, **kwargs):
+        self.sent.append(kwargs)
+
+
+async def test_email_otp_flow(client, db_session, monkeypatch):
+    r1, _, d1, c1 = await _seed_geo(db_session)
+    await db_session.delete(await db_session.get(EmailOtp, "john@example.com"))
+    await db_session.commit()
+
+    mailer = _FakeMailer()
+    monkeypatch.setattr("app.services.email_otp._build_mailer", lambda _settings: mailer)
+
+    r = await client.post("/api/v1/adhesions/email-otp", json={"email": "John@Example.com"})
+    assert r.status_code == 200
+    assert mailer.sent[0]["to"] == "john@example.com"
+    code = next(w for w in mailer.sent[0]["text"].split() if w.isdigit() and len(w) == 6)
+
+    r = await client.post("/api/v1/adhesions/email-otp", json={"email": "john@example.com"})
+    assert r.status_code == 429
+
+    p = _payload(region_id=r1.id, departement_id=d1.id, commune_id=c1.id)
+    p["email_otp"] = "000000" if code != "000000" else "111111"
+    r = await client.post("/api/v1/adhesions", data=p, files=_files())
+    assert r.status_code == 400 and "OTP_INVALID" in r.text
+
+    p["email_otp"] = code
+    r = await client.post("/api/v1/adhesions", data=p, files=_files())
+    assert r.status_code == 200
+
+    db_session.expire_all()
+    assert await db_session.get(EmailOtp, "john@example.com") is None
+
+    r = await client.post("/api/v1/adhesions/email-otp", json={"email": "john@example.com"})
+    assert r.status_code == 409

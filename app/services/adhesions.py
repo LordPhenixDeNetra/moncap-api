@@ -15,6 +15,7 @@ from app.models.adhesion import Adhesion
 from app.models.enums import EngagementType, PaymentMode
 from app.repositories.adhesions import AdhesionRepository
 from app.repositories.geo import GeoRepository
+from app.services.email_otp import verify_email_otp
 from app.storage.local import LocalStorage
 
 
@@ -133,6 +134,7 @@ class AdhesionService:
         profile_photo: UploadFile | None,
         cv: UploadFile,
         idempotency_key: str | None,
+        email_otp: str,
         diplome: UploadFile | None = None,
     ) -> Adhesion:
         if not data.certification:
@@ -176,6 +178,7 @@ class AdhesionService:
                 return existing
 
         email_norm = normalize_email(data.email)
+        await verify_email_otp(self.session, email_norm, email_otp)
         conflict = await self.adhesions.get_conflict_by_email(email_norm)
         if conflict:
             raise HTTPException(
