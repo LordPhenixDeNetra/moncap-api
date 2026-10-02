@@ -159,7 +159,7 @@ async def main():
 
     settings = get_settings()
     if not settings.mail_enabled and not args.dry_run:
-        print("⚠️  MAIL_ENABLED=false — aucun email ne sera envoyé. Passez --dry-run pour compter ou activez MAIL_ENABLED.")
+        print("MAIL_ENABLED=false — aucun email ne sera envoyé. Passez --dry-run pour compter ou activez MAIL_ENABLED.")
 
     if args.action == "debut_mois":
         total, envoyes = await envoyer_notifications_debut_mois(args.annee, args.mois, args.dry_run)
@@ -169,7 +169,7 @@ async def main():
     if args.dry_run:
         print(f"[DRY RUN] Prévu pour {NOMS_MOIS[args.mois]} {args.annee} : {total} emails (action={args.action})")
     else:
-        print(f"✅ {envoyes}/{total} emails envoyés pour {NOMS_MOIS[args.mois]} {args.annee} (action={args.action}).")
+        print(f" {envoyes}/{total} emails envoyés pour {NOMS_MOIS[args.mois]} {args.annee} (action={args.action}).")
 
 
 if __name__ == "__main__":

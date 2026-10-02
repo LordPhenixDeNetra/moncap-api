@@ -253,9 +253,9 @@ async def run(dry_run: bool = True, default_status_str: str = "en_attente") -> R
             for line in sql_lines:
                 f.write(line + "\n")
             f.write("COMMIT;\n")
-        print(f"\n📄 SQL de debug écrit dans : {sql_path}")
+        print(f"\n SQL de debug écrit dans : {sql_path}")
     except Exception as e:
-        print(f"\n⚠️  Impossible écrire fichier SQL : {e}")
+        print(f"\n  Impossible écrire fichier SQL : {e}")
     print("\n" + "=" * 100)
     print("RÉSUMÉ")
     print("=" * 100)
@@ -290,13 +290,13 @@ def main():
         sys.exit(0)
     if not args.apply:
         print(
-            "\n⚠️  DRY RUN TERMINÉ. Rien n'a été modifié en base."
-            "\n👉 Vérifiez la liste ci-dessus puis relancez avec :  --apply\n"
+            "\n  DRY RUN TERMINÉ. Rien n'a été modifié en base."
+            "\n Vérifiez la liste ci-dessus puis relancez avec :  --apply\n"
         )
     else:
         print("\n✅ TRAITEMENT APPLIQUÉ.")
-        print("👉 Vérifiez le fichier rebuild_adhesions_from_users.sql pour audit manuel.")
-        print("👉 Si besoin de modifier les placeholders, éditez les via l'admin MONCAP (champs: date_naissance, lieu_naissance, profession, tel_mobile, cni, commissariat, fonction_professionnelle, niveau_etude, etc.)")
+        print(" Vérifiez le fichier rebuild_adhesions_from_users.sql pour audit manuel.")
+        print(" Si besoin de modifier les placeholders, éditez les via l'admin MONCAP (champs: date_naissance, lieu_naissance, profession, tel_mobile, cni, commissariat, fonction_professionnelle, niveau_etude, etc.)")
 
 
 if __name__ == "__main__":

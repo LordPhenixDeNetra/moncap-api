@@ -50,7 +50,7 @@ def _construire_cors_origins(settings) -> list[str]:
                 stacklevel=2,
             )
             print(
-                "\n⚠️  [CORS WARNING] '*' n'est pas autorisé avec allow_credentials=True. "
+                "\n  [CORS WARNING] '*' n'est pas autorisé avec allow_credentials=True. "
                 "Utilisez le domaine EXACT : https://moncap.innovamind.tech dans CORS_ALLOW_ORIGINS\n",
                 file=sys.stderr,
             )
@@ -176,7 +176,7 @@ def create_app() -> FastAPI:
         max_age=3600,                 # Cache OPTIONS preflight 1h → moins d'appels navigateur
     )
 
-    # ⚠️ Anti-masquage CORS : PLUS EXTERNE DES MIDDLEWARES (enregistré APRÈS CORSMiddleware).
+    # Anti-masquage CORS : PLUS EXTERNE DES MIDDLEWARES (enregistré APRÈS CORSMiddleware).
     # Attrape TOUTES les Exception Python (KeyError, TypeError, AttributeError...) et renvoie
     # une réponse JSON 500 AVEC headers Access-Control-Allow-Origin → navigateur ne masque plus
     # l'erreur en "CORS policy blocked".

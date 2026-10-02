@@ -88,7 +88,7 @@ class Settings(BaseSettings):
 
     cors_allow_origins: list[str] = Field(
         default_factory=lambda: [
-            # ⚠️ RÈGLE CORS CRITIQUE : JAMAIS '*' si allow_credentials=True.
+            # RÈGLE CORS CRITIQUE : JAMAIS '*' si allow_credentials=True.
             # Navigateur bloque systématiquement les requêtes avec Bearer JWT / cookies si le
             # header Access-Control-Allow-Origin est '*' avec allow_credentials=true.
             # Toujours METTRE les domaines EXPLICITES (avec protocole https:// et port si besoin)
