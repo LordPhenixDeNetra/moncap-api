@@ -1,0 +1,76 @@
+# Déploiement MONCAP (backend + frontend)
+#
+# Fichiers attendus à côté de ce docker-compose.yml sur le serveur :
+#   .env       configuration de production du backend (DATABASE_URL, JWT_SECRET, SMTP, KOPAR...)
+#   crontab    tâches planifiées (conteneur "cron")
+#   storage/   fichiers uploadés (CV, photos, diplômes, QR) : sudo chown -R 1000:1000 ./storage
+#
+# Déployer / mettre à jour :
+#   docker compose pull && docker compose up -d
+
+x-common: &common
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+  networks:
+    - moncap_net
+
+x-backend: &backend
+  image: netradev/moncap-backend:latest
+  env_file: .env
+  volumes:
+    - ./storage:/app/storage
+  restart: unless-stopped
+  <<: *common
+
+services:
+  # Applique les migrations de base de données à chaque déploiement, AVANT l'API.
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Tâches planifiées (une seule instance : ne jamais dupliquer ce service).
+  cron:
+    <<: *backend
+    command: ["supercronic", "/app/crontab"]
+    volumes:
+      - ./storage:/app/storage
+      - ./crontab:/app/crontab:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Frontend (port interne de l'image : 80 si servie par Nginx, à adapter sinon).
+  # L'URL de l'API est figée dans l'image au moment du "docker build" du frontend.
+  frontend:
+    image: netradev/moncap-frontend:latest
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+    <<: *common
+
+networks:
+  # Nom fixe (non préfixé par le nom du dossier) : un reverse proxy lancé dans un autre
+  # docker compose peut le rejoindre en le déclarant "external: true".
+  moncap_net:
+    name: moncap_net
+    driver: bridge

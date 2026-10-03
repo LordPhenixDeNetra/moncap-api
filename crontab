@@ -1,0 +1,20 @@
+# Tâches planifiées MONCAP, exécutées par supercronic dans le conteneur "cron".
+# Détail de chaque tâche : voir CRON.md. Heures en UTC (= heure de Dakar).
+
+# Rattrapage des paiements Kopar si le webhook n'arrive pas (toutes les 5 min)
+*/5 * * * * python -m app.cli.reconcile_kopar_pending_transactions --apply --once
+
+# Génération des cotisations du mois (le 1er à 02h00)
+0 2 1 * * python -m app.cli.generate_monthly_dues
+
+# Radiation automatique 3 mois impayés (le 1er à 02h30, APRÈS la génération)
+30 2 1 * * python -m app.cli.apply_radiations --apply
+
+# Email "cotisation du mois disponible" (le 1er à 08h00)
+0 8 1 * * python -m app.cli.send_payment_reminders debut_mois
+
+# Relance 1 des impayés (le 10 à 08h00)
+0 8 10 * * python -m app.cli.send_payment_reminders relance --niveau 1
+
+# Relance 2 des impayés (le 20 à 08h00)
+0 8 20 * * python -m app.cli.send_payment_reminders relance --niveau 2

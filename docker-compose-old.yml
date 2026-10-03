@@ -1,0 +1,53 @@
+# Déploiement MONCAP backend
+#
+# Fichiers attendus à côté de ce docker-compose.yml sur le serveur :
+#   .env       configuration de production (DATABASE_URL, JWT_SECRET, SMTP, KOPAR...)
+#   crontab    tâches planifiées (conteneur "cron")
+#   storage/   fichiers uploadés (CV, photos, diplômes, QR) : sudo chown -R 1000:1000 ./storage
+#
+# Déployer / mettre à jour :
+#   docker compose pull && docker compose up -d
+
+x-backend: &backend
+  image: netradev/moncap-backend:latest
+  env_file: .env
+  volumes:
+    - ./storage:/app/storage
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  # Applique les migrations de base de données à chaque déploiement, AVANT l'API.
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Tâches planifiées (une seule instance : ne jamais dupliquer ce service).
+  cron:
+    <<: *backend
+    command: ["supercronic", "/app/crontab"]
+    volumes:
+      - ./storage:/app/storage
+      - ./crontab:/app/crontab:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
