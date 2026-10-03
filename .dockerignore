@@ -1,3 +1,18 @@
+# Git : l'historique contient d'anciens secrets, ne JAMAIS l'embarquer
+.git/
+.gitignore
+
+# Secrets et configuration locale (fournis au runtime via env_file)
+.env
+.env.*
+
+# Données utilisateurs (CV, photos, diplômes...) : montées en volume, pas dans l'image
+storage/
+
+# Environnements Python et caches
+.venv/
+venv/
+env/
 __pycache__/
 *.pyc
 *.pyo
@@ -6,18 +21,27 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .tox/
-.venv/
-venv/
-env/
+
+# Tests et fichiers de développement
+tests/
+pytest.ini
+test_main.http
+_check_cors.py
+
+# IDE / outils
 .idea/
 .vscode/
+.trae/
+.claude/
 .DS_Store
 
-.env
-.env.*
-
-storage/
-
-tests/
-
+# Logs
 *.log
+
+# Documentation (inutile à l'exécution)
+*.md
+
+# Docker lui-même
+Dockerfile
+.dockerignore
+docker-compose*.yml

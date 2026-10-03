@@ -7,12 +7,14 @@ Ce job :
   1. Récupère toutes les lignes transactions_kopar.statut IN (new, pending) créées il y a
      au moins N minutes (RECONCILE_KOPAR_OLDER_MINUTES).
   2. Interroge Kopar `GET /api/v2/transaction/{kopar_token}` pour connaître le vrai statut.
-  3. Si Kopar dit "success" → on EXÉCUTE exactement le même workflow que le webhook SUCCESS :
-       - set transactions_kopar.statut = success
-       - si type_transaction = adhesion → set adhesions.paiement_confirme = TRUE
-       - si type_transaction = cotisation → set cotisations_mensuelles.statut = payee
-  4. Si Kopar dit "failed / cancelled / refunded" → on marque transactions_kopar.statut
-     à la bonne valeur (pour ne plus le traiter à chaque boucle).
+  3. Applique le statut via PaiementOrchestratorService.appliquer_statut_kopar : EXACTEMENT
+     le même code que le webhook (aucune logique dupliquée ici) :
+       - success + adhesion    → adhesions.paiement_confirme = TRUE + email
+       - success + cotisation  → les N mois de la période (1/3/6/12) passent à payee + email
+       - failed / cancelled / refunded → statut final enregistré (plus retraité ensuite)
+     Verrou ligne + idempotence : sans risque si le webhook arrive en même temps.
+  4. Une transaction par ligne : une erreur n'empêche pas les autres d'être rattrapées.
+     Code retour 1 si au moins une erreur (visible par le CRON / la supervision).
 
 Mode d'emploi :
     # Mode dry-run par défaut (NE TOUCHE PAS À LA BASE) :
@@ -43,21 +45,15 @@ import asyncio
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Tuple
+from typing import Tuple
 
+from fastapi import BackgroundTasks
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import get_settings
-from app.db.session import AsyncSessionLocal
-from app.models.adhesion import Adhesion
-from app.models.paiements import (
-    CotisationMensuelle,
-    CotisationStatut,
-    StatutTransactionKopar,
-    TransactionKopar,
-    TypeTransactionKopar,
-)
+from app.db.session import get_sessionmaker
+from app.models.paiements import StatutTransactionKopar, TransactionKopar
 from app.services.kopar import KoparClient, KoparError
 from app.services.paiement_orchestrator import PaiementOrchestratorService
 
@@ -120,197 +116,99 @@ async def _get_pending_transactions(
     return rows
 
 
-async def _get_adhesion(db: AsyncSession, aid: Any) -> Adhesion | None:
-    if aid is None:
-        return None
-    return await db.get(Adhesion, aid)
+async def _reconcile_one_tour(
+    *, dry_run: bool, older_minutes_override: int | None = None
+) -> Tuple[int, int, int, int]:
+    """Un seul passage. Retourne (candidats, marques_success, autres_marques, erreurs).
 
-
-async def _get_cotisation(db: AsyncSession, cid: Any) -> CotisationMensuelle | None:
-    if cid is None:
-        return None
-    return await db.get(CotisationMensuelle, cid)
-
-
-async def _apply_success_on_business_records(
-    db: AsyncSession,
-    tx: TransactionKopar,
-    *,
-    dry_run: bool,
-) -> list[str]:
-    """Applique exactement le même workflow que processer_webhook SUCCESS.
-    Retourne une liste d'actions décrites pour les logs."""
-    actions: list[str] = []
-    orchestrator = PaiementOrchestratorService(db)
-
-    try:
-        if tx.type_transaction == TypeTransactionKopar.adhesion and tx.adhesion_id:
-            adh = await _get_adhesion(db, tx.adhesion_id)
-            if adh is None:
-                actions.append("adhesion introuvable (skip)")
-            else:
-                adh.paiement_confirme = True
-                if (
-                    adh.reference_paiement is None
-                    or len(str(adh.reference_paiement or "").strip()) == 0
-                ):
-                    adh.reference_paiement = (
-                        f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}"
-                    )
-                actions.append(f"adhesion {tx.adhesion_id} -> paiement_confirme=true")
-                await orchestrator.transactions.update_after_webhook(
-                    tx.id,
-                    StatutTransactionKopar.success,
-                    webhook_body={"reconcile_job": True, "method": "kopar_get_transaction_poll"},
-                )
-        elif tx.type_transaction == TypeTransactionKopar.cotisation:
-            if not tx.cotisation_id:
-                actions.append("cotisation_id manquant sur tx (skip)")
-            else:
-                from app.models.paiements import PeriodePaiement
-
-                try:
-                    _ = PeriodePaiement.normaliser(tx.periode_mois)
-                except Exception:
-                    tx.periode_mois = 1
-                ref = (
-                    f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}"
-                    if not getattr(tx, "kopar_token", None)
-                    else (getattr(tx, "kopar_token") or f"KOPAR-RECONCILE-{str(tx.id)[:8].upper()}")
-                )
-                lignes = await orchestrator.cotisations.mark_paid_periode(
-                    tx,
-                    reference_paiement=ref,
-                    mode_paiement="kopar_reconcile",
-                    update_tx_status=True,
-                )
-                if lignes:
-                    annee_mois = [f"{c.annee}-{c.mois:02d}" for c in lignes]
-                    actions.append(
-                        f"cotisation period={getattr(tx, 'periode_mois') or 1} mois="
-                        f"{','.join(annee_mois)} -> {len(lignes)} ligne(s) statut payee"
-                    )
-                else:
-                    if tx.statut == StatutTransactionKopar.success:
-                        actions.append(
-                            f"cotisation {tx.cotisation_id} -> deja payee (idempotent), tx statut deja success"
-                        )
-                    else:
-                        actions.append(
-                            f"cotisation {tx.cotisation_id} -> aucune ligne marquee (possiblement deja payees)"
-                        )
-                        if tx.statut != StatutTransactionKopar.success:
-                            await orchestrator.transactions.update_after_webhook(
-                                tx.id,
-                                StatutTransactionKopar.success,
-                                webhook_body={
-                                    "reconcile_job": True,
-                                    "method": "kopar_get_transaction_poll",
-                                    "note": "aucune ligne cotisation marquee mais tx marquee success",
-                                },
-                            )
-        else:
-            actions.append(
-                f"type_transaction={tx.type_transaction} sans adhesion_id/cotisation_id valides (mark success seul)"
-            )
-            tx.statut = StatutTransactionKopar.success
-            tx.last_webhook_received_at = datetime.now(timezone.utc)
-            if tx.last_webhook_body and isinstance(tx.last_webhook_body, dict):
-                body = dict(tx.last_webhook_body)
-                body.update({"reconcile_job": True})
-                tx.last_webhook_body = body
-            else:
-                tx.last_webhook_body = {"reconcile_job": True}
-    except Exception as exc:
-        actions.append(f"ERREUR appels orchestrator / repo: {exc!r}")
-
-    if dry_run:
-        pass
-    else:
-        await db.flush()
-    return actions
-
-
-async def _reconcile_one_tour(*, dry_run: bool, older_minutes_override: int | None = None) -> Tuple[int, int, int]:
-    """Un seul passage. Retourne (candidats, marques_success, autres_marques)."""
+    Chaque transaction est traitée dans SA PROPRE session/transaction SQL : une erreur sur
+    l'une est loggée, comptée, et n'empêche pas les autres d'être rattrapées.
+    Le métier est délégué à PaiementOrchestratorService.appliquer_statut_kopar, le même code
+    que le webhook (verrou ligne, idempotence, statuts finaux protégés, emails).
+    """
     settings = get_settings()
-    older_minutes = int(older_minutes_override) if older_minutes_override is not None else max(1, int(settings.reconcile_kopar_older_minutes or 5))
-    db: AsyncSession
-    async with AsyncSessionLocal() as db:
-        candidats = await _get_pending_transactions(db, older_minutes)
-        _print(
-            "INFO",
-            f"Tour démarré : {len(candidats)} transaction(s) en statut new/pending "
-            f"aged >= {older_minutes} min.",
-        )
-        if not candidats:
-            return 0, 0, 0
+    older_minutes = (
+        int(older_minutes_override)
+        if older_minutes_override is not None
+        else max(1, int(settings.reconcile_kopar_older_minutes or 5))
+    )
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as db:
+        candidats = [
+            (tx.id, str(tx.kopar_token or "").strip(), tx.statut)
+            for tx in await _get_pending_transactions(db, older_minutes)
+        ]
+    _print(
+        "INFO",
+        f"Tour démarré : {len(candidats)} transaction(s) en statut new/pending "
+        f"aged >= {older_minutes} min.",
+    )
+    if not candidats:
+        return 0, 0, 0, 0
 
-        client = KoparClient()
-        marques_success = 0
-        autres_marques = 0
+    client = KoparClient()
+    marques_success = autres_marques = erreurs = 0
 
-        for tx in candidats:
-            token = str(tx.kopar_token or "").strip()
-            if not token:
-                _print("WARN", f"tx {tx.id} — kopar_token vide (skip).")
-                continue
-            try:
-                detail = await client.get_transaction_detail(token)
-            except KoparError as e:
-                _print(
-                    "WARN",
-                    f"tx {tx.id} KoparError appel detail statut HTTP={e.status_code} "
-                    f"kopar_error_code={e.kopar_error_code} — {e}",
-                )
-                continue
-            except Exception as exc:
-                _print("ERROR", f"tx {tx.id} exception sur get_transaction_detail : {exc!r}")
-                continue
-
-            nouveau = detail.statut
-            if nouveau == tx.statut:
-                # Aucun changement, on touche à rien.
-                continue
-
+    for tx_id, token, statut_bd in candidats:
+        if not token:
+            _print("WARN", f"tx {tx_id} : kopar_token vide (skip).")
+            continue
+        try:
+            detail = await client.get_transaction_detail(token)
+        except KoparError as e:
+            erreurs += 1
             _print(
-                "INFO",
-                f"tx {tx.id} (token…{token[-6:]}) statut Kopar={nouveau.value} vs BDD={tx.statut.value}",
+                "ERROR",
+                f"tx {tx_id} : appel Kopar en échec HTTP={e.status_code} "
+                f"kopar_error_code={e.kopar_error_code} : {e}",
             )
+            continue
+        except Exception as exc:
+            erreurs += 1
+            _print("ERROR", f"tx {tx_id} : exception get_transaction_detail : {exc!r}")
+            continue
 
+        nouveau = detail.statut
+        if nouveau in (StatutTransactionKopar.new, StatutTransactionKopar.pending):
+            continue  # toujours en cours côté Kopar : on retentera au prochain passage
+
+        label = f"tx {tx_id} (token...{token[-6:]}) Kopar={nouveau.value} vs BDD={statut_bd.value}"
+        if dry_run:
+            _print("DRY", f"{label} -> serait appliqué")
             if nouveau == StatutTransactionKopar.success:
-                actions = await _apply_success_on_business_records(db, tx, dry_run=dry_run)
                 marques_success += 1
-                for a in actions:
-                    _print("OK" if not dry_run else "DRY", f"  → {a}")
-            elif nouveau in (
-                StatutTransactionKopar.failed,
-                StatutTransactionKopar.cancelled,
-                StatutTransactionKopar.refunded,
-            ):
-                autres_marques += 1
-                if not dry_run:
-                    tx.statut = nouveau
-                    tx.last_webhook_received_at = datetime.now(timezone.utc)
-                    if tx.last_webhook_body and isinstance(tx.last_webhook_body, dict):
-                        body = dict(tx.last_webhook_body)
-                        body.update({"reconcile_job": True})
-                        tx.last_webhook_body = body
-                    else:
-                        tx.last_webhook_body = {"reconcile_job": True}
-                    await db.flush()
-                _print(
-                    "INFO" if dry_run else "OK",
-                    f"  → statut_final={nouveau.value} (pas de marquage adh/cot)",
-                )
             else:
-                # pending/new : rien, on retente prochaine boucle
-                pass
+                autres_marques += 1
+            continue
 
-        if not dry_run:
-            await db.commit()
+        background_tasks = BackgroundTasks()
+        try:
+            async with sessionmaker() as db:
+                action = await PaiementOrchestratorService(db).appliquer_statut_kopar(
+                    tx_id,
+                    nouveau,
+                    body={"source": "reconcile_job", "kopar_detail": detail.data},
+                    background_tasks=background_tasks,
+                )
+                await db.commit()
+        except Exception as exc:
+            erreurs += 1
+            _print("ERROR", f"{label} -> ÉCHEC, rien n'est appliqué (retenté au prochain passage) : {exc!r}")
+            continue
 
-    return len(candidats), marques_success, autres_marques
+        if nouveau == StatutTransactionKopar.success:
+            marques_success += 1
+        else:
+            autres_marques += 1
+        _print("OK", f"{label} -> {action}")
+
+        # Emails de confirmation APRÈS commit, comme pour le webhook
+        try:
+            await background_tasks()
+        except Exception as exc:
+            _print("WARN", f"tx {tx_id} : email de confirmation non envoyé : {exc!r}")
+
+    return len(candidats), marques_success, autres_marques, erreurs
 
 
 async def run_async(
@@ -360,14 +258,17 @@ async def run_async(
 
     # one-shot
     debut = time.monotonic()
-    total_cands, ok, autres = await _reconcile_one_tour(dry_run=dry_run, older_minutes_override=older_minutes)
+    total_cands, ok, autres, erreurs = await _reconcile_one_tour(
+        dry_run=dry_run, older_minutes_override=older_minutes
+    )
     duree_ms = int((time.monotonic() - debut) * 1000)
     _print(
-        "INFO",
+        "INFO" if not erreurs else "ERROR",
         f"Tour one-shot terminé en {duree_ms}ms. "
-        f"Candidats={total_cands} ; marqués SUCCESS={ok} ; autres statuts={autres}.",
+        f"Candidats={total_cands} ; marqués SUCCESS={ok} ; autres statuts={autres} ; ERREURS={erreurs}.",
     )
-    return 0
+    # Code retour 1 si erreurs : le CRON / la supervision le voit (au lieu d'un faux succès)
+    return 1 if erreurs else 0
 
 
 def main(argv: list[str] | None = None) -> int:

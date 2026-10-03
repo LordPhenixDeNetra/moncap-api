@@ -285,23 +285,27 @@ class CotisationMensuelleRepository:
         periode = PeriodePaiement.normaliser(tx.periode_mois)
         if tx.type_transaction.value != "cotisation" if hasattr(tx.type_transaction, "value") else str(tx.type_transaction) != "cotisation":
             return result
-        premier = None
-        if tx.cotisation_id:
-            premier = await self.get_by_id(tx.cotisation_id)
-        if premier is None:
-            return result
-        adhesion_id = premier.adhesion_id
-        from_annee = premier.annee
-        from_mois = premier.mois
+        premier = await self.get_by_id(tx.cotisation_id) if tx.cotisation_id else None
+        # Ligne d'ancrage disparue (cotisation_id remis à NULL) : on se rabat sur les infos
+        # portées par la transaction elle-même. L'adhérent a payé, on marque quand même.
+        adhesion_id = premier.adhesion_id if premier else tx.adhesion_id
+        from_annee = premier.annee if premier else None
+        from_mois = premier.mois if premier else None
         if tx.premiere_annee_couverte and tx.premier_mois_couverte:
             from_annee = int(tx.premiere_annee_couverte)
             from_mois = int(tx.premier_mois_couverte)
+        if not adhesion_id or not from_annee or not from_mois:
+            return result
         liste_mois = self.calculer_mois_consecutifs(from_annee, from_mois, periode)
         paiement_ts = paiement_date or datetime.now(timezone.utc)
         ref_p = str(reference_paiement or tx.kopar_token or "")[:200] or None
         mode_p = str(mode_paiement or "kopar") or None
-        montant_defaut_mois = premier.montant or getattr(premier, "montant", None) or 0
-        devise_mois = premier.devise or "XOF"
+        if premier is not None:
+            montant_defaut_mois = premier.montant or 0
+            devise_mois = premier.devise or "XOF"
+        else:
+            montant_defaut_mois = int(tx.montant or 0) // periode
+            devise_mois = tx.devise or "XOF"
         manuel = bool(paiement_manuel_user_id)
         for (an, mo) in liste_mois:
             c = await self.get_or_create_for_adherent_mois(

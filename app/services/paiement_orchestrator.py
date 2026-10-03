@@ -595,22 +595,14 @@ class PaiementOrchestratorService:
                 message=f"Aucune transaction trouvée pour ref {command_ref}",
             )
 
-        await self.transactions.update_after_webhook(
+        action = await self.appliquer_statut_kopar(
             tx.id,
             statut,
-            webhook_body=json_body,
+            body=json_body,
+            background_tasks=background_tasks,
             customer_email=json_body.get("email"),
             customer_phone=json_body.get("phoneNumber"),
         )
-
-        action = None
-        if statut == StatutTransactionKopar.success:
-            if tx.type_transaction == TypeTransactionKopar.adhesion:
-                await self._appliquer_paiement_adhesion_success(tx, background_tasks)
-                action = "adhesion_confirmee"
-            elif tx.type_transaction == TypeTransactionKopar.cotisation:
-                await self._appliquer_paiement_cotisation_success(tx, background_tasks)
-                action = "cotisation_confirmee"
 
         return WebhookProcessed(
             ok=True,
@@ -620,18 +612,89 @@ class PaiementOrchestratorService:
             action=action,
         )
 
+    async def appliquer_statut_kopar(
+        self,
+        tx_id: uuid.UUID,
+        statut: StatutTransactionKopar,
+        *,
+        body: dict,
+        background_tasks: BackgroundTasks | None = None,
+        customer_email: str | None = None,
+        customer_phone: str | None = None,
+    ) -> str | None:
+        """Point d'entrée UNIQUE pour appliquer un statut Kopar (webhook ET CRON de rattrapage).
+
+        Garanties :
+          - verrou ligne (SELECT ... FOR UPDATE) : webhook et CRON ne traitent jamais la même
+            transaction en parallèle (pas de double marquage / double email) ;
+          - un statut final n'est jamais rétrogradé (un webhook "pending" en retard n'écrase pas
+            un "success") ; seul "success" peut remplacer "failed/cancelled" (l'argent fait foi) ;
+          - idempotent : réappliquer "success" ne remarque rien et ne renvoie pas d'email.
+        Ne commite pas : l'appelant commite (les emails partent via background_tasks après).
+        Retourne l'action effectuée (pour les logs), None si transaction introuvable.
+        """
+        res = await self.session.execute(
+            select(TransactionKopar)
+            .where(TransactionKopar.id == tx_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        tx = res.scalar_one_or_none()
+        if tx is None:
+            return None
+
+        actuel = tx.statut
+        finaux = {
+            StatutTransactionKopar.success,
+            StatutTransactionKopar.failed,
+            StatutTransactionKopar.cancelled,
+            StatutTransactionKopar.refunded,
+        }
+        if actuel in finaux and statut in (StatutTransactionKopar.new, StatutTransactionKopar.pending):
+            return f"ignore_{statut.value}_statut_final_{actuel.value}"
+        if actuel == StatutTransactionKopar.success and statut in (
+            StatutTransactionKopar.failed,
+            StatutTransactionKopar.cancelled,
+        ):
+            return f"ignore_{statut.value}_deja_success"
+
+        tx.statut = statut
+        tx.last_webhook_body = body
+        tx.last_webhook_received_at = datetime.now(timezone.utc)
+        if customer_email:
+            tx.customer_email = customer_email
+        if customer_phone:
+            tx.customer_phone = customer_phone
+        await self.session.flush()
+
+        if statut == StatutTransactionKopar.refunded and actuel == StatutTransactionKopar.success:
+            # ponytail: pas d'annulation automatique des mois/adhésion payés, un admin tranche
+            return "remboursement_a_traiter_manuellement"
+        if statut != StatutTransactionKopar.success:
+            return f"statut_{statut.value}"
+
+        if tx.type_transaction == TypeTransactionKopar.adhesion:
+            applique = await self._appliquer_paiement_adhesion_success(tx, background_tasks)
+            return "adhesion_confirmee" if applique else "adhesion_deja_confirmee_ou_introuvable"
+        if tx.type_transaction == TypeTransactionKopar.cotisation:
+            lignes = await self.appliquer_paiement_cotisation_success(tx, background_tasks)
+            if lignes:
+                return "cotisation_confirmee:" + ",".join(f"{c.annee}-{c.mois:02d}" for c in lignes)
+            return "cotisation_deja_payee_ou_introuvable"
+        return "success_type_inconnu"
+
     async def _appliquer_paiement_adhesion_success(
         self,
         tx: TransactionKopar,
         background_tasks: BackgroundTasks | None,
-    ) -> None:
+    ) -> bool:
         if not tx.adhesion_id:
-            return
+            return False
         adhesion = await self.adhesions.get_by_id(tx.adhesion_id)
         if not adhesion:
-            return
+            return False
         if adhesion.paiement_confirme:
-            return
+            return False
         adhesion.paiement_confirme = True
         adhesion.reference_paiement = (
             adhesion.reference_paiement or tx.kopar_token
@@ -660,6 +723,7 @@ class PaiementOrchestratorService:
                 )
             except Exception:
                 pass
+        return True
 
     async def appliquer_paiement_cotisation_success(
         self,
@@ -672,8 +736,6 @@ class PaiementOrchestratorService:
         - Retourne la liste des lignes marquées payées (vide si déjà payée).
         - PUBLIC : réutilisable depuis la réconciliation CLI (qui n'a pas BackgroundTasks).
         """
-        if not tx.cotisation_id:
-            return []
         lignes_payees = await self.cotisations.mark_paid_periode(
             tx,
             reference_paiement=tx.kopar_token,
